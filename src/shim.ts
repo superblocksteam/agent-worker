@@ -1,6 +1,6 @@
 import { ExecutionOutput, ExecutionContext } from '@superblocksteam/shared';
 import { BasePlugin, PluginProps } from '@superblocksteam/shared-backend';
-import { P } from 'pino';
+import P from 'pino';
 import {
   SUPERBLOCKS_CONTROLLER_KEY,
   SUPERBLOCKS_WORKER_EXECUTION_PYTHON_TIMEOUT_MS,
