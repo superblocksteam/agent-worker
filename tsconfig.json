@@ -1,10 +1,15 @@
 {
-  "extends": "../../tsconfig.json",
   "compilerOptions": {
     "target": "esnext",
+    "module": "commonjs",
+    "incremental": true,
+    "declaration": true,
+    "sourceMap": true,
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "composite": true,
     "rootDir": "./src",
     "outDir": "./dist",
-    "module": "commonjs",
     "allowSyntheticDefaultImports": true,
     "forceConsistentCasingInFileNames": true,
     "emitDecoratorMetadata": true,
