@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "target": "esnext",
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "module": "commonjs",
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "typeRoots": ["./typings", "./node_modules/@types"]
+  },
+  "include": ["./src/**/*.ts"],
+  "exclude": ["./node_modules", "./tests/**/*.ts"]
+}
