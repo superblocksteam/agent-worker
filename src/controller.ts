@@ -49,7 +49,11 @@ export class ControllerFleet implements Closer {
 
     // Plugins should be loaded at the fleet level.
     // We dont' need to re-load for each future controller.
-    config.vpds.forEach(async (vpd) => {
+    //
+    // NOTE(frank): We could make this concurrent. However, since the tested time difference
+    //              is neglibible, this approach will eliminate any potenital issues with
+    //              concurrent dyamic imports.
+    for (const vpd of config.vpds) {
       const plugin = await Shim.init(vpd);
 
       if (!(plugin.name() in fleet._plugins)) {
@@ -60,7 +64,7 @@ export class ControllerFleet implements Closer {
         version: plugin.version(),
         plugin
       });
-    });
+    }
 
     // Discover new controllers.
     fleet._reconciler = new ScheduledTask(

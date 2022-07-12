@@ -9,8 +9,8 @@ export class BusyError extends RetryableError {
 }
 
 export class NoScheduleError extends RetryableError {
-  constructor() {
-    super();
+  constructor(msg?: string) {
+    super(msg);
     this.name = 'NoScheduleError';
   }
 }
@@ -36,7 +36,7 @@ export function unmarshal(err: any): Error {
     case QuotaError.name:
       return new QuotaError(msg);
     case NoScheduleError.name:
-      return new NoScheduleError();
+      return new NoScheduleError(msg);
     default:
       return new Error(msg);
   }

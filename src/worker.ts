@@ -1,4 +1,4 @@
-import { ExecutionOutput } from '@superblocksteam/shared';
+import { ExecutionOutput, leveledLogFn, wrapError } from '@superblocksteam/shared';
 import { PluginProps } from '@superblocksteam/shared-backend';
 import P from 'pino';
 import { Socket } from 'socket.io';
@@ -119,7 +119,7 @@ export class Worker {
         });
       });
     } catch (err) {
-      logger.error({ err: err.message }, 'worker could not execute step');
+      leveledLogFn(err, logger)({ err: err.name }, wrapError(err, 'worker could not execute step'));
       throw err;
     }
   }
