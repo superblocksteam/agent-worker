@@ -1,6 +1,6 @@
 {
   "name": "@superblocksteam/worker",
-  "version": "0.1753.0",
+  "version": "0.1768.0",
   "description": "Superblocks Worker",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -39,8 +39,8 @@
     "typescript": "4.2.3"
   },
   "dependencies": {
-    "@superblocksteam/shared": "npm:@superblocksteam/shared@0.1753.0",
-    "@superblocksteam/shared-backend": "npm:@superblocksteam/shared-backend@0.1753.0",
+    "@superblocksteam/shared": "npm:@superblocksteam/shared@0.1768.0",
+    "@superblocksteam/shared-backend": "npm:@superblocksteam/shared-backend@0.1768.0",
     "@types/express": "^4.17.13",
     "@types/multer": "^1.4.7",
     "dd-trace": "^2.3.1",
@@ -63,7 +63,7 @@
     "sb-email-0.0.3": "npm:@superblocksteam/email@0.1684.0",
     "sb-email-0.0.4": "npm:@superblocksteam/email@0.1747.0",
     "sb-graphql-0.0.4": "npm:@superblocksteam/graphql@0.1684.0",
-    "sb-graphql-0.0.5": "npm:@superblocksteam/graphql@0.1734.0",
+    "sb-graphql-0.0.5": "npm:@superblocksteam/graphql@0.1767.0",
     "sb-gsheets-0.0.10": "npm:@superblocksteam/gsheets@0.1684.0",
     "sb-javascript-0.0.6": "npm:@superblocksteam/javascript@0.1684.0",
     "sb-javascript-0.0.7": "npm:@superblocksteam/javascript@0.1753.0",

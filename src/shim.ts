@@ -59,15 +59,10 @@ export class Shim<T extends BasePlugin> implements Plugin {
       // This code sits on the other side of a transport. Hence, we need
       // to re-construct it so that we get access to the class methods.
       props.context = new ExecutionContext(props.context);
-      // For some reason, bindings use the redacted context whereas language plugins use the normal context.
       props.redactedContext = new ExecutionContext(props.redactedContext);
 
       // This is used by the fileServer in readContents() for authentication.
-      // NOTE(frank): Can't use addGlobalVariable because we lose the
-      //              class functions after encoding. We could add an
-      //              unmarshal() but seems unecessary here.
-      // UPDATE: I believe we can use the method now give the above change.
-      props.context.globals['$agentKey'] = sanitizeAgentKey(SUPERBLOCKS_CONTROLLER_KEY);
+      props.context.addGlobalVariable('$agentKey', sanitizeAgentKey(SUPERBLOCKS_CONTROLLER_KEY));
       props.redactedContext.addGlobalVariable('$agentKey', sanitizeAgentKey(SUPERBLOCKS_CONTROLLER_KEY));
 
       callback(await this._plugin.setupAndExecute(props), null);
