@@ -1,6 +1,6 @@
 import { createServer } from 'http';
 import { createSecureServer, Http2Server } from 'http2';
-import { ExecutionOutput, Backoff, Retry } from '@superblocksteam/shared';
+import { ExecutionOutput, WorkerStatus, Backoff, Retry } from '@superblocksteam/shared';
 import { PluginProps } from '@superblocksteam/shared-backend';
 import P from 'pino';
 import { Socket, Server } from 'socket.io';
@@ -65,6 +65,10 @@ export class Fleet {
     this._httpServer.listen(options.port, () => {
       this._logger.info({ port: options.port }, 'fleet is awaiting new workers');
     });
+  }
+
+  public info(): WorkerStatus[] {
+    return this._workers.map((worker) => worker.info());
   }
 
   // Singleton implementation

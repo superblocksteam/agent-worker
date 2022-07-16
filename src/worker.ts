@@ -1,4 +1,4 @@
-import { ExecutionOutput, leveledLogFn, wrapError } from '@superblocksteam/shared';
+import { ExecutionOutput, WorkerStatus, leveledLogFn, wrapError } from '@superblocksteam/shared';
 import { PluginProps } from '@superblocksteam/shared-backend';
 import P from 'pino';
 import { Socket } from 'socket.io';
@@ -29,6 +29,17 @@ export class Worker {
     });
 
     this.bind();
+  }
+
+  public info(): WorkerStatus {
+    return {
+      id: this.id(),
+      plugins: this._plugins.map((plugin) => `${plugin.name}@${plugin.version}`),
+      cordoned: this._cordoned,
+      labels: this._labels,
+      created: this._socket.handshake?.issued,
+      secure: this._socket.handshake?.secure
+    };
   }
 
   private extractLabels(): void {
