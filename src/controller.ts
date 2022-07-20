@@ -10,7 +10,7 @@ import { Closer, shutdown } from './runtime';
 import { Shim } from './shim';
 import { ScheduledTask } from './task';
 import { Transport, SocketIO, TLSOptions } from './transport';
-import { baseServerRequest } from './utils';
+import { baseServerRequest, delta } from './utils';
 
 export type Options = {
   vpds: VersionedPluginDefinition[];
@@ -132,7 +132,7 @@ export class ControllerFleet implements Closer {
       this._logger.error({ err }, 'error discovering controllers');
       return; // Log and swallow.
     }
-    const { add, remove } = ControllerFleet.delta(this._registered, desired);
+    const { add, remove } = delta(this._registered, desired);
     this._logger.info({ add, remove }, 'reconcile results');
 
     remove.forEach((controller) => {
@@ -141,37 +141,5 @@ export class ControllerFleet implements Closer {
       delete this._registered[controller];
     });
     this.register(...add);
-  }
-
-  public static delta(actual: { [url: string]: Transport }, desired: Controller[]): { add: Controller[]; remove: string[] } {
-    const desiredUrls: string[] = Array.from(new Set(desired.map((controller) => controller.url))).sort();
-    const actualUrls: string[] = Array.from(new Set(Object.keys(actual))).sort();
-
-    const toAdd: Controller[] = [];
-    const toRemove: string[] = [];
-
-    let d = 0;
-    let a = 0;
-
-    while (d < desiredUrls.length && a < actualUrls.length) {
-      if (desiredUrls[d] == actualUrls[a]) {
-        d++;
-        a++;
-      } else if (desiredUrls[d] < actualUrls[a]) {
-        toAdd.push({ url: desiredUrls[d++] });
-      } else {
-        toRemove.push(actualUrls[a++]);
-      }
-    }
-
-    while (d < desiredUrls.length) {
-      toAdd.push({ url: desiredUrls[d++] });
-    }
-
-    while (a < actualUrls.length) {
-      toRemove.push(actualUrls[a++]);
-    }
-
-    return { add: toAdd, remove: toRemove };
   }
 }

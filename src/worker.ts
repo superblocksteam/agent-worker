@@ -1,9 +1,8 @@
-import { ExecutionOutput, WorkerStatus, leveledLogFn, wrapError } from '@superblocksteam/shared';
-import { PluginProps } from '@superblocksteam/shared-backend';
+import { leveledLogFn, wrapError, WorkerStatus } from '@superblocksteam/shared';
 import P from 'pino';
 import { Socket } from 'socket.io';
-import { unmarshal } from './errors';
-import { VersionedPluginDefinition } from './plugin';
+import { unmarshal, ErrorEncoding } from './errors';
+import { VersionedPluginDefinition, Request, Response, Event } from './plugin';
 
 // TODO(frank): Ideally we'd separate the worker from the transport.
 export class Worker {
@@ -118,19 +117,19 @@ export class Worker {
     return this._socket.id;
   }
 
-  public async execute(plugin: string, props: PluginProps): Promise<ExecutionOutput> {
-    const logger = this._logger.child({ plugin });
+  public async execute(event: Event, plugin: string, request: Request): Promise<Response> {
+    const logger = this._logger.child({ plugin, event });
 
     try {
-      return await new Promise<ExecutionOutput>((resolve, reject) => {
-        logger.info('emitting execution request to worker');
-        this._socket.emit(plugin, props, (_output: ExecutionOutput, _err: Error) => {
+      return await new Promise<Response>((resolve, reject) => {
+        logger.info('emitting request to worker');
+        this._socket.emit(plugin, event, request, (_response: Response, _err: ErrorEncoding) => {
           logger.info('received response from worker');
-          _err ? reject(unmarshal(_err)) : resolve(_output);
+          _err ? reject(unmarshal(_err)) : resolve(_response);
         });
       });
     } catch (err) {
-      leveledLogFn(err, logger)({ err: err.name }, wrapError(err, 'worker could not execute step'));
+      leveledLogFn(err, logger)({ err: err.name }, wrapError(err, 'worker could not complete request'));
       throw err;
     }
   }

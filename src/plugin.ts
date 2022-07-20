@@ -1,5 +1,12 @@
-import { ExecutionOutput, SupportedPluginVersions } from '@superblocksteam/shared';
+import {
+  ExecutionOutput,
+  SupportedPluginVersions,
+  DatasourceConfiguration,
+  DatasourceMetadataDto,
+  ActionConfiguration
+} from '@superblocksteam/shared';
 import { PluginProps } from '@superblocksteam/shared-backend';
+import { ErrorEncoding } from './errors';
 
 export type PluginRequest = {
   exclude?: boolean;
@@ -31,7 +38,7 @@ export function unmarshalPluginRequest(request: string): PluginRequest {
 
 export type VersionedPluginDefinition = {
   name: string;
-  version: string;
+  version?: string;
 };
 
 export function sort(i: VersionedPluginDefinition, j: VersionedPluginDefinition): number {
@@ -54,7 +61,25 @@ export function marshalVPDs(vpds: VersionedPluginDefinition[]): SupportedPluginV
   return marshaled;
 }
 
-export type RunFunc = (props: PluginProps, callback: (_output: ExecutionOutput, _err: Error) => void) => void;
+export type Request = {
+  datasourceConfiguration?: DatasourceConfiguration;
+  actionConfiguration?: ActionConfiguration;
+  pluginProps?: PluginProps;
+};
+
+export type Response = {
+  executionOutput?: ExecutionOutput;
+  datasourceMetadataDto?: DatasourceMetadataDto;
+};
+
+export enum Event {
+  METADATA = 'metadata',
+  TEST = 'test',
+  EXECUTE = 'execute',
+  PRE_DELETE = 'pre_delete'
+}
+
+export type RunFunc = (_event: Event, _request: Request, callback: (_response: Response, _err: ErrorEncoding) => void) => void;
 
 export interface Plugin {
   run: RunFunc;

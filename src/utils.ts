@@ -1,4 +1,4 @@
-import { AGENT_KEY_HEADER, AGENT_ID_HEADER, Retry, RetryableError, SupportedPluginVersions } from '@superblocksteam/shared';
+import { AGENT_KEY_HEADER, AGENT_ID_HEADER, Retry, RetryableError, SupportedPluginVersions, Controller } from '@superblocksteam/shared';
 import axios, { AxiosRequestConfig, Method } from 'axios';
 import P from 'pino';
 import {
@@ -12,6 +12,7 @@ import {
 } from './env';
 import { MaybeError } from './errors';
 import { VersionedPluginDefinition, marshalVPDs } from './plugin';
+import { Transport } from './transport';
 
 export function unmarshalLabels(encoding: string): Record<string, string> {
   const records: Record<string, string> = {};
@@ -97,4 +98,36 @@ export async function register(options: { logger: P.Logger; vpds: VersionedPlugi
     },
     'worker registration'
   ).do();
+}
+
+export function delta(actual: { [url: string]: Transport }, desired: Controller[]): { add: Controller[]; remove: string[] } {
+  const desiredUrls: string[] = Array.from(new Set(desired.map((controller) => controller.url))).sort();
+  const actualUrls: string[] = Array.from(new Set(Object.keys(actual))).sort();
+
+  const toAdd: Controller[] = [];
+  const toRemove: string[] = [];
+
+  let d = 0;
+  let a = 0;
+
+  while (d < desiredUrls.length && a < actualUrls.length) {
+    if (desiredUrls[d] == actualUrls[a]) {
+      d++;
+      a++;
+    } else if (desiredUrls[d] < actualUrls[a]) {
+      toAdd.push({ url: desiredUrls[d++] });
+    } else {
+      toRemove.push(actualUrls[a++]);
+    }
+  }
+
+  while (d < desiredUrls.length) {
+    toAdd.push({ url: desiredUrls[d++] });
+  }
+
+  while (a < actualUrls.length) {
+    toRemove.push(actualUrls[a++]);
+  }
+
+  return { add: toAdd, remove: toRemove };
 }

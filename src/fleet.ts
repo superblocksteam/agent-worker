@@ -1,11 +1,20 @@
 import { createServer } from 'http';
 import { createSecureServer, Http2Server } from 'http2';
-import { ExecutionOutput, WorkerStatus, Backoff, Retry } from '@superblocksteam/shared';
+import {
+  ActionConfiguration,
+  ExecutionOutput,
+  WorkerStatus,
+  DatasourceConfiguration,
+  DatasourceMetadataDto,
+  Backoff,
+  Retry
+} from '@superblocksteam/shared';
 import { PluginProps } from '@superblocksteam/shared-backend';
 import P from 'pino';
 import { Socket, Server } from 'socket.io';
 import { NoScheduleError } from './errors';
 import { Auth } from './middleware';
+import { VersionedPluginDefinition, Request, Response, Event } from './plugin';
 import { TLSOptions } from './transport';
 import { Worker } from './worker';
 
@@ -26,13 +35,26 @@ type Filters = {
   labels?: Record<string, string>;
 };
 
-export class Fleet {
+type Selector = {
+  vpd: VersionedPluginDefinition;
+  labels?: Record<string, string>;
+};
+
+interface Client {
+  info(): WorkerStatus[];
+  metadata(selector: Selector, dConfig: DatasourceConfiguration, aConfig?: ActionConfiguration): Promise<DatasourceMetadataDto>;
+  test(selector: Selector, dConfig: DatasourceConfiguration): Promise<void>;
+  execute(selector: Selector, props: PluginProps): Promise<ExecutionOutput>;
+  preDelete(selector: Selector, dConfig: DatasourceConfiguration): Promise<void>;
+}
+
+export class Fleet implements Client {
   private _workers: Worker[];
   private _server: Server;
   private _logger: P.Logger;
   private _options: Options;
   private _httpServer: Http2Server;
-  private static _instance: Fleet;
+  private static _instance: Client;
 
   private constructor(logger: P.Logger, options: Options) {
     this._workers = [];
@@ -72,7 +94,7 @@ export class Fleet {
   }
 
   // Singleton implementation
-  public static instance(logger?: P.Logger, options?: Options): Fleet {
+  public static instance(logger?: P.Logger, options?: Options): Client {
     if (!Fleet._instance) {
       Fleet._instance = new Fleet(logger, options);
     }
@@ -170,17 +192,34 @@ export class Fleet {
     return selected;
   }
 
-  public async execute(plugin: string, props: PluginProps): Promise<ExecutionOutput> {
-    // TODO(frank): I need a better way to do this.
-    //              Maybe the controller has SUPERBLOCKS_WORKER_MATCH_SELECTOR="environement=staging,foo=bar"
-    //              to make it completely configurable.
-    const hardcodedLabelSelector = { environment: props.environment };
+  public async execute(selector: Selector, pluginProps: PluginProps): Promise<ExecutionOutput> {
+    return (await this._execute(Event.EXECUTE, selector, { pluginProps }))?.executionOutput;
+  }
 
-    return await new Retry<ExecutionOutput>(this._options.backoff, this._logger.child({ plugin }), async (): Promise<ExecutionOutput> => {
+  public async metadata(
+    selector: Selector,
+    datasourceConfiguration: DatasourceConfiguration,
+    actionConfiguration?: ActionConfiguration
+  ): Promise<DatasourceMetadataDto> {
+    return (await this._execute(Event.METADATA, selector, { datasourceConfiguration, actionConfiguration }))?.datasourceMetadataDto;
+  }
+
+  public async test(selector: Selector, datasourceConfiguration: DatasourceConfiguration): Promise<void> {
+    await this._execute(Event.TEST, selector, { datasourceConfiguration });
+  }
+
+  public async preDelete(selector: Selector, datasourceConfiguration: DatasourceConfiguration): Promise<void> {
+    await this._execute(Event.PRE_DELETE, selector, { datasourceConfiguration });
+  }
+
+  private async _execute(event: Event, selector: Selector, request: Request): Promise<Response> {
+    const plugin = selector.vpd.version ? `${selector.vpd.name}@${selector.vpd.version}` : selector.vpd.name;
+
+    return await new Retry<Response>(this._options.backoff, this._logger.child({ plugin }), async (): Promise<Response> => {
       let selected: Worker;
       try {
-        selected = this.schedule({ plugin, labels: hardcodedLabelSelector });
-        return await selected.execute(plugin, props);
+        selected = this.schedule({ plugin, labels: selector.labels });
+        return await selected.execute(event, plugin, request);
       } catch (err) {
         if (err instanceof NoScheduleError) {
           selected.cordon();

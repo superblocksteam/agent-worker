@@ -1,11 +1,10 @@
-import { Retry, ExecutionOutput } from '@superblocksteam/shared';
-import { PluginProps } from '@superblocksteam/shared-backend';
+import { Retry } from '@superblocksteam/shared';
 import pino from 'pino';
 import { io, Socket } from 'socket.io-client';
 import { MaybeError } from './errors';
 import { Interceptor, RateLimiter, Scheduler } from './interceptor';
 import logger from './logger';
-import { Plugin, VersionedPluginDefinition, RunFunc } from './plugin';
+import { Plugin, VersionedPluginDefinition, RunFunc, Request, Response, Event } from './plugin';
 import { Closer } from './runtime';
 import tracer from './tracer';
 
@@ -124,7 +123,7 @@ export class SocketIO implements Transport {
 
   // TODO(frank): It'd be cool to introduce a middleware concept.
   private intercept(plugin: Plugin): RunFunc {
-    return async (props: PluginProps, callback: (_output: ExecutionOutput, _err: Error) => void): Promise<void> => {
+    return async (_event: Event, _request: Request, callback: (_response: Response, _err: Error) => void): Promise<void> => {
       tracer.trace(`${plugin.name}@${plugin.version}`, {}, async (): Promise<void> => {
         this._interceptors.forEach((interceptor) => {
           const err = interceptor?.before();
@@ -132,7 +131,7 @@ export class SocketIO implements Transport {
             return callback(null, err);
           }
         });
-        await plugin.run(props, callback);
+        await plugin.run(_event, _request, callback);
         this._interceptors.forEach((interceptor) => {
           const err = interceptor?.after();
           if (err) {
