@@ -23,6 +23,6 @@ COPY requirements.txt /usr/app/packages/misc/requirements.txt
 RUN pip3 install -r /usr/app/packages/misc/requirements.txt
 WORKDIR /usr/app/worker/dist
 
-ENV SUPERBLOCKS_WORKER_VERSION=0.1884.0
+ENV SUPERBLOCKS_WORKER_VERSION=0.1889.0
 
 CMD ["dumb-init", "node", "entry.js"]

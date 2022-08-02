@@ -18,6 +18,7 @@ import sb_mariadb_0_0_2 from 'sb-mariadb-0.0.2';
 import sb_mariadb_0_0_4 from 'sb-mariadb-0.0.4';
 import sb_mongodb_0_0_3 from 'sb-mongodb-0.0.3';
 import sb_mongodb_0_0_5 from 'sb-mongodb-0.0.5';
+import sb_mongodb_0_0_6 from 'sb-mongodb-0.0.6';
 import sb_mssql_0_0_2 from 'sb-mssql-0.0.2';
 import sb_mssql_0_0_4 from 'sb-mssql-0.0.4';
 import sb_mysql_0_0_2 from 'sb-mysql-0.0.2';
@@ -58,6 +59,7 @@ const dependencies: Record<string, BasePlugin | unknown> = {
   'sb-mariadb-0.0.4': new sb_mariadb_0_0_4(),
   'sb-mongodb-0.0.3': new sb_mongodb_0_0_3(),
   'sb-mongodb-0.0.5': new sb_mongodb_0_0_5(),
+  'sb-mongodb-0.0.6': new sb_mongodb_0_0_6(),
   'sb-mssql-0.0.2': new sb_mssql_0_0_2(),
   'sb-mssql-0.0.4': new sb_mssql_0_0_4(),
   'sb-mysql-0.0.2': new sb_mysql_0_0_2(),
