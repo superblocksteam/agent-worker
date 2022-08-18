@@ -116,21 +116,33 @@ export class SocketIO implements Transport {
   // TODO(frank): It'd be cool to introduce a middleware concept.
   private intercept(plugin: Plugin): RunFunc {
     return async (_event: Event, _request: Request, callback: (_response: Response, _err: Error) => void): Promise<void> => {
-      tracer.trace(`${plugin.name}@${plugin.version}`, {}, async (): Promise<void> => {
-        this._interceptors.forEach((interceptor) => {
-          const err = interceptor?.before();
-          if (err) {
-            return callback(null, err);
+      await tracer.trace(
+        'plugin execution',
+        {
+          tags: {
+            plugin: {
+              event: _event,
+              name: plugin.name(),
+              version: plugin.version()
+            }
           }
-        });
-        await plugin.run(_event, _request, callback);
-        this._interceptors.forEach((interceptor) => {
-          const err = interceptor?.after();
-          if (err) {
-            return callback(null, err);
-          }
-        });
-      });
+        },
+        async (): Promise<void> => {
+          this._interceptors.forEach((interceptor) => {
+            const err = interceptor?.before();
+            if (err) {
+              return callback(null, err);
+            }
+          });
+          await plugin.run(_event, _request, callback);
+          this._interceptors.forEach((interceptor) => {
+            const err = interceptor?.after();
+            if (err) {
+              return callback(null, err);
+            }
+          });
+        }
+      );
     };
   }
 
