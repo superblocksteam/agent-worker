@@ -49,6 +49,9 @@ export class SocketIO implements Transport {
     // Prefix all labels with an HTTP header friendly prefix.
     if (options?.labels) {
       Object.keys(options.labels).forEach((key) => {
+        if (key.startsWith(`x-superblocks-label-`)) {
+          return;
+        }
         options.labels[`x-superblocks-label-${key}`] = options.labels[key];
         delete options.labels[key];
       });
