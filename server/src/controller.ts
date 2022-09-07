@@ -1,12 +1,12 @@
-import { Controller, compareSemVer } from '@superblocksteam/shared';
-import { VersionedPluginDefinition, MaybeError, TLSOptions } from '@superblocksteam/worker';
+import { Controller, compareSemVer, MaybeError } from '@superblocksteam/shared';
+import { Closer, shutdown } from '@superblocksteam/shared-backend';
+import { VersionedPluginDefinition, TLSOptions } from '@superblocksteam/worker';
 import axios from 'axios';
 import P from 'pino';
 import { forward } from './diagnostics';
 import { SUPERBLOCKS_CONTROLLER_DISCOVERY_INTERVAL_SECONDS } from './env';
-import { controllerGuage } from './metrics';
+import { controllerGauge } from './metrics';
 import { Plugin } from './plugin';
-import { Closer, shutdown } from './runtime';
 import { Shim } from './shim';
 import { ScheduledTask } from './task';
 import { Transport, SocketIO } from './transport';
@@ -80,7 +80,7 @@ export class ControllerFleet implements Closer {
 
   public register(...controllers: Controller[]): void {
     controllers.forEach((controller) => {
-      controllerGuage.inc();
+      controllerGauge.inc();
       this._logger.info(
         {
           controller_url: controller.url,
@@ -136,7 +136,7 @@ export class ControllerFleet implements Closer {
     this._logger.info({ add, remove }, 'reconcile results');
 
     remove.forEach((controller) => {
-      controllerGuage.dec();
+      controllerGauge.dec();
       this._registered[controller]?.close("removed from server's desired state");
       delete this._registered[controller];
     });

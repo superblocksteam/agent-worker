@@ -1,6 +1,6 @@
-import { MaybeError } from '@superblocksteam/worker';
+import { MaybeError } from '@superblocksteam/shared';
+import { Closer } from '@superblocksteam/shared-backend';
 import { schedule, ScheduledTask as cronTask } from 'node-cron';
-import { Closer } from './runtime';
 
 export class ScheduledTask implements Closer {
   private _reconciler: cronTask;

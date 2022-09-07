@@ -1,6 +1,6 @@
 import { ExecutionContext } from '@superblocksteam/shared';
 import { BasePlugin, sanitizeAgentKey } from '@superblocksteam/shared-backend';
-import { VersionedPluginDefinition, ErrorEncoding, marshal, Event, Request, Response } from '@superblocksteam/worker';
+import { VersionedPluginDefinition, Event, Request, Response } from '@superblocksteam/worker';
 import P from 'pino';
 import dependencies from './dependencies';
 import {
@@ -59,7 +59,7 @@ export class Shim<T extends BasePlugin> implements Plugin {
     return new Shim(pluginDef, plugin);
   }
 
-  public async run(_event: Event, _request: Request, callback: (_response: Response, _err: ErrorEncoding) => void): Promise<void> {
+  public async run(_event: Event, _request: Request): Promise<{ resp?: Response; err?: Error }> {
     const _logger = this._logger.child({ event: _event });
 
     try {
@@ -76,28 +76,20 @@ export class Shim<T extends BasePlugin> implements Plugin {
           _request.pluginProps.context.addGlobalVariable('$agentKey', sanitizeAgentKey(SUPERBLOCKS_CONTROLLER_KEY));
           _request.pluginProps.redactedContext.addGlobalVariable('$agentKey', sanitizeAgentKey(SUPERBLOCKS_CONTROLLER_KEY));
 
-          return callback(
-            {
-              executionOutput: await this._plugin.setupAndExecute(_request.pluginProps)
-            },
-            null
-          );
+          return { resp: { executionOutput: await this._plugin.setupAndExecute(_request.pluginProps) } };
         }
         case Event.TEST: {
           await this._plugin.test(_request.datasourceConfiguration);
-          return callback({}, null);
+          return { resp: {} };
         }
         case Event.PRE_DELETE: {
           await this._plugin.preDelete(_request.datasourceConfiguration);
-          return callback({}, null);
+          return { resp: {} };
         }
         case Event.METADATA: {
-          return callback(
-            {
-              datasourceMetadataDto: await this._plugin.metadata(_request.datasourceConfiguration, _request.actionConfiguration)
-            },
-            null
-          );
+          return {
+            resp: { datasourceMetadataDto: await this._plugin.metadata(_request.datasourceConfiguration, _request.actionConfiguration) }
+          };
         }
         default: {
           throw new Error(`unrecognized event ${_event}`);
@@ -112,7 +104,7 @@ export class Shim<T extends BasePlugin> implements Plugin {
         'could not execute plugin'
       );
       // We need to wrap the error and throw it in the controller.
-      callback(null, marshal(err));
+      return { err };
     }
   }
 

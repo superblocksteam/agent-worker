@@ -54,5 +54,3 @@ export function unmarshal(err?: ErrorEncoding): Error {
       return new Error(msg);
   }
 }
-
-export type MaybeError = Error | void;

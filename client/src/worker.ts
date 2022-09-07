@@ -2,7 +2,8 @@ import { leveledLogFn, wrapError, WorkerStatus } from '@superblocksteam/shared';
 import P from 'pino';
 import { Socket } from 'socket.io';
 import { unmarshal, ErrorEncoding } from './errors';
-import { VersionedPluginDefinition, Request, Response, Event } from './utils';
+import { Library } from './metrics';
+import { VersionedPluginDefinition, Request, Response, Event, Timings, Metadata } from './utils';
 
 // TODO(frank): Ideally we'd separate the worker from the transport.
 export class Worker {
@@ -11,11 +12,13 @@ export class Worker {
   private _logger: P.Logger;
   private _cordoned: boolean;
   private _labels: Record<string, string>;
+  private _metrics: Library;
 
-  constructor(logger: P.Logger, socket: Socket) {
+  constructor(logger: P.Logger, socket: Socket, metrics: Library) {
     this._plugins = [];
     this._socket = socket;
     this._cordoned = false;
+    this._metrics = metrics;
 
     this.extractLabels();
 
@@ -48,7 +51,7 @@ export class Worker {
       if (!header.startsWith('x-superblocks-label-')) {
         return;
       }
-      this._labels[header.replace(/^(x-superblocks-label-)/, '')] = this._socket.handshake.headers[header].toString();
+      this._labels[header.replace(/^(x-superblocks-label-)/, '')] = this._socket.handshake.headers?.[header]?.toString() ?? '';
     });
   }
 
@@ -117,16 +120,43 @@ export class Worker {
     return this._socket.id;
   }
 
-  public async execute(event: Event, plugin: string, request: Request): Promise<Response> {
+  public async execute(
+    event: Event,
+    metadata: Metadata,
+    vpd: VersionedPluginDefinition,
+    request: Request,
+    timings: Timings
+  ): Promise<Response> {
+    // NOTE(frank): I'm going to start passing around a VersionedPluginDefinition
+    //              instead of the marshaled version so we can marshal it at the leaf.
+    //              Until the refactor is complete, you'll see the following line duped.
+    const plugin = vpd.version ? `${vpd.name}@${vpd.version}` : vpd.name;
     const logger = this._logger.child({ plugin, event });
 
     try {
       return await new Promise<Response>((resolve, reject) => {
         logger.info('emitting request to worker');
-        this._socket.emit(plugin, event, request, (_response: Response, _err: ErrorEncoding) => {
-          logger.info('received response from worker');
-          _err ? reject(unmarshal(_err)) : resolve(_response);
-        });
+        this._socket.emit(
+          plugin,
+          event,
+          metadata,
+          request,
+          { ...timings, socketRequest: Date.now() },
+          (_response: Response, _timings: Timings, _err: ErrorEncoding) => {
+            logger.info('received response from worker');
+            this._metrics.socketResponseLatency.observe(
+              {
+                resource_type: metadata.resourceType,
+                org_id: metadata.orgID,
+                plugin_event: event,
+                plugin_name: vpd.name,
+                plugin_version: vpd.version
+              },
+              Date.now() - (_timings.socketResponse ?? 0)
+            );
+            _err ? reject(unmarshal(_err)) : resolve(_response);
+          }
+        );
       });
     } catch (err) {
       leveledLogFn(err, logger)({ err: err.name }, wrapError(err, 'worker could not complete request'));

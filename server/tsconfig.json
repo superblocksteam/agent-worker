@@ -14,8 +14,9 @@
     "forceConsistentCasingInFileNames": true,
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true,
-    "typeRoots": ["./typings", "./node_modules/@types"]
+    "typeRoots": ["./typings", "./node_modules/@types"],
+    "strictNullChecks": false
   },
   "include": ["./src/**/*.ts"],
-  "exclude": ["./node_modules", "./tests/**/*.ts"]
+  "exclude": ["node_modules", "./tests/**/*.ts"]
 }

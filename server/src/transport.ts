@@ -1,11 +1,22 @@
-import { Retry } from '@superblocksteam/shared';
-import { VersionedPluginDefinition, Event, Request, Response, TLSOptions, MaybeError } from '@superblocksteam/worker';
+import { Retry, MaybeError } from '@superblocksteam/shared';
+import { Closer } from '@superblocksteam/shared-backend';
+import {
+  VersionedPluginDefinition,
+  Event,
+  Request,
+  Response,
+  TLSOptions,
+  Timings,
+  ErrorEncoding,
+  marshal,
+  Metadata
+} from '@superblocksteam/worker';
 import pino from 'pino';
 import { io, Socket } from 'socket.io-client';
 import { Interceptor, RateLimiter, Scheduler } from './interceptor';
 import logger from './logger';
+import { pluginGauge, socketRequestLatency, pluginDuration, executionLatency } from './metrics';
 import { Plugin, RunFunc } from './plugin';
-import { Closer } from './runtime';
 import tracer from './tracer';
 
 export type Options = {
@@ -93,17 +104,17 @@ export class SocketIO implements Transport {
     // The func we're passing never throws but since Retry.do() can throw
     // if that function is changed, I'd rather protect against it here.
     try {
-      await new Retry<void>(
-        {
+      await new Retry<void>({
+        backoff: {
           duration: 10,
           factor: 2,
           jitter: 0.5,
           limit: Infinity
         },
-        this._logger,
-        async (): Promise<void> => this._rateLimiter.check(),
-        'transport drain'
-      ).do();
+        logger: this._logger,
+        func: async (): Promise<void> => this._rateLimiter.check(),
+        name: 'transport drain'
+      }).do();
       this._logger.info('all inflight steps have been completed by this transport');
     } catch (err) {
       return err;
@@ -118,8 +129,25 @@ export class SocketIO implements Transport {
 
   // TODO(frank): It'd be cool to introduce a middleware concept.
   private intercept(plugin: Plugin): RunFunc {
-    return async (_event: Event, _request: Request, callback: (_response: Response, _err: Error) => void): Promise<void> => {
-      await tracer.trace(
+    return async (
+      _event: Event,
+      _metadata: Metadata,
+      _request: Request,
+      _timings: Timings,
+      callback: (_response: Response, _timings: Timings, _err: ErrorEncoding) => void
+    ): Promise<void> => {
+      socketRequestLatency.observe(
+        {
+          org_id: _metadata.orgID,
+          resource_type: _metadata.resourceType,
+          plugin_name: plugin.name(),
+          plugin_version: plugin.version(),
+          plugin_event: _event
+        },
+        Date.now() - _timings.socketRequest
+      );
+
+      const { resp, err } = await tracer.trace(
         'plugin execution',
         {
           tags: {
@@ -130,22 +158,50 @@ export class SocketIO implements Transport {
             }
           }
         },
-        async (): Promise<void> => {
-          this._interceptors.forEach((interceptor) => {
-            const err = interceptor?.before();
+        async (): Promise<{ resp?: Response; err?: Error }> => {
+          for (const interceptor of this._interceptors) {
+            const err = interceptor?.before(plugin);
             if (err) {
-              return callback(null, err);
+              return { err };
             }
-          });
-          await plugin.run(_event, _request, callback);
-          this._interceptors.forEach((interceptor) => {
-            const err = interceptor?.after();
+          }
+
+          executionLatency.observe(
+            {
+              plugin_name: plugin.name(),
+              plugin_version: plugin.version(),
+              plugin_event: _event,
+              org_id: _metadata.orgID,
+              resource_type: _metadata.resourceType
+            },
+            Date.now() - _timings.invocation
+          );
+
+          const startTime = Date.now();
+          const { resp, err } = await plugin.run(_event, _request);
+
+          pluginDuration.observe(
+            {
+              plugin_name: plugin.name(),
+              plugin_version: plugin.version(),
+              plugin_event: _event,
+              org_id: _metadata.orgID,
+              resource_type: _metadata.resourceType
+            },
+            Date.now() - startTime
+          );
+          for (const interceptor of this._interceptors) {
+            const err = interceptor?.after(plugin);
             if (err) {
-              return callback(null, err);
+              return { err };
             }
-          });
+          }
+
+          return { resp, err };
         }
       );
+
+      return callback(err ? null : resp, { ..._timings, socketResponse: Date.now() }, err ? marshal(err) : null);
     };
   }
 
@@ -154,7 +210,19 @@ export class SocketIO implements Transport {
       return;
     }
     this._socket.emit('registration', this._plugins, (ack: string) =>
-      this._logger.info({ ack, plugins: this._plugins.map((plugin) => `${plugin.name}@${plugin.version}`) }, 'plugins registered')
+      this._logger.info(
+        {
+          ack,
+          plugins: this._plugins.map((plugin) => {
+            pluginGauge.inc({
+              plugin_name: plugin.name,
+              plugin_version: plugin.version
+            });
+            return `${plugin.name}@${plugin.version}`;
+          })
+        },
+        'plugins registered'
+      )
     );
   }
 

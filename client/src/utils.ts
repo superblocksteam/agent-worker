@@ -1,4 +1,10 @@
-import { ExecutionOutput, DatasourceConfiguration, DatasourceMetadataDto, ActionConfiguration } from '@superblocksteam/shared';
+import {
+  ExecutionOutput,
+  DatasourceConfiguration,
+  DatasourceMetadataDto,
+  ActionConfiguration,
+  EventEntityType
+} from '@superblocksteam/shared';
 import { PluginProps } from '@superblocksteam/shared-backend';
 
 export type TLSOptions = {
@@ -30,4 +36,15 @@ export type Request = {
 export type Response = {
   executionOutput?: ExecutionOutput;
   datasourceMetadataDto?: DatasourceMetadataDto;
+};
+
+export type Timings = {
+  invocation?: number;
+  socketRequest?: number;
+  socketResponse?: number;
+};
+
+export type Metadata = {
+  orgID?: string;
+  resourceType?: EventEntityType;
 };

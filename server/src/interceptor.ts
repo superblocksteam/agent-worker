@@ -1,10 +1,11 @@
-import { RetryableError } from '@superblocksteam/shared';
-import { MaybeError, BusyError, NoScheduleError } from '@superblocksteam/worker';
-import { busyCount } from './metrics';
+import { RetryableError, MaybeError } from '@superblocksteam/shared';
+import { BusyError, NoScheduleError } from '@superblocksteam/worker';
+import { busyCount, activeGauge } from './metrics';
+import { Plugin } from './plugin';
 
 export interface Interceptor {
-  before(): MaybeError;
-  after(): MaybeError;
+  before(plugin: Plugin): MaybeError;
+  after(plugin: Plugin): MaybeError;
 }
 
 export class Scheduler implements Interceptor {
@@ -14,14 +15,15 @@ export class Scheduler implements Interceptor {
     this._isScheduleable = true;
   }
 
-  public before(): MaybeError {
+  public before(plugin: Plugin): MaybeError {
     if (!this._isScheduleable) {
       return new NoScheduleError();
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-empty-function
-  public after(): MaybeError {}
+  public after(plugin: Plugin): MaybeError {
+    return;
+  }
 
   public cordon(): void {
     this._isScheduleable = false;
@@ -37,7 +39,7 @@ export class RateLimiter implements Interceptor {
     this._active = 0;
   }
 
-  public before(): MaybeError {
+  public before(plugin: Plugin): MaybeError {
     // NOTE(frank): I'm assuing that Node.js will lock the post increment
     //              in the same critical section as the evaluation.
     if (this._active++ == this._max) {
@@ -47,13 +49,24 @@ export class RateLimiter implements Interceptor {
       this._active--;
       // TODO(frank): Find a clean way to take this in as a class field instead of globally.
       //              As is, this class isn't reuseable.
-      busyCount.inc();
+      busyCount.inc({
+        plugin_name: plugin.name(),
+        plugin_version: plugin.version()
+      });
       return new BusyError(`This worker has reached its limit of ${this._active} active tasks.`);
     }
+    activeGauge.inc({
+      plugin_name: plugin.name(),
+      plugin_version: plugin.version()
+    });
   }
 
-  public after(): MaybeError {
+  public after(plugin: Plugin): MaybeError {
     this._active--;
+    activeGauge.dec({
+      plugin_name: plugin.name(),
+      plugin_version: plugin.version()
+    });
   }
 
   public check(): void {

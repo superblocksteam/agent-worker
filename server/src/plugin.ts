@@ -1,5 +1,5 @@
 import { SupportedPluginVersions } from '@superblocksteam/shared';
-import { VersionedPluginDefinition, ErrorEncoding, Event, Request, Response } from '@superblocksteam/worker';
+import { VersionedPluginDefinition, ErrorEncoding, Event, Request, Response, Timings, Metadata } from '@superblocksteam/worker';
 
 export type PluginRequest = {
   exclude?: boolean;
@@ -49,10 +49,16 @@ export function marshalVPDs(vpds: VersionedPluginDefinition[]): SupportedPluginV
   return marshaled;
 }
 
-export type RunFunc = (_event: Event, _request: Request, callback: (_response: Response, _err: ErrorEncoding) => void) => void;
+export type RunFunc = (
+  _event: Event,
+  _metadata: Metadata,
+  _request: Request,
+  _timings: Timings,
+  callback: (_response: Response, _timings: Timings, _err: ErrorEncoding) => void
+) => void;
 
 export interface Plugin {
-  run: RunFunc;
+  run: (_event: Event, _request: Request) => Promise<{ resp?: Response; err?: Error }>;
   name(): string;
   version(): string;
 }

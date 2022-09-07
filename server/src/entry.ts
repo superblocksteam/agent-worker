@@ -1,5 +1,7 @@
 import { readFileSync } from 'fs';
-import { VersionedPluginDefinition, MaybeError, TLSOptions } from '@superblocksteam/worker';
+import { MaybeError } from '@superblocksteam/shared';
+import { Closer, shutdownHandlers, HttpServer } from '@superblocksteam/shared-backend';
+import { VersionedPluginDefinition, TLSOptions } from '@superblocksteam/worker';
 import tracer from 'dd-trace';
 import { ControllerFleet } from './controller';
 import dependencies from './dependencies';
@@ -14,14 +16,13 @@ import {
   SUPERBLOCKS_WORKER_LABELS as labels,
   SUPERBLOCKS_CONTROLLER_KEY as key,
   SUPERBLOCKS_WORKER_ID as id,
-  SUPERBLOCKS_WORKER_METRICS_PORT as port
+  SUPERBLOCKS_WORKER_METRICS_PORT as port,
+  SUPERBLOCKS_AGENT_METRICS_FORWARD
 } from './env';
 import logger from './logger';
 import { handler, healthcheck } from './metrics';
 import { load } from './plugin';
-import { Closer, shutdownHandlers } from './runtime';
 import { Scheduler } from './scheduler';
-import { HttpServer } from './server';
 import { register, deregister } from './utils';
 
 tracer.init({
@@ -79,17 +80,22 @@ try {
       'SIGTERM', // Kubernetes
       'SIGUSR2' // Nodemon
     ],
-    controllers,
-    new Scheduler({ fn: healthcheck({ deployed_at: new Date() }, logger), logger, name: 'healthcheck' }),
-    new HttpServer({ port, handler }),
-    {
-      close: async (reason?: string): Promise<MaybeError> => {
-        try {
-          return await deregister({ logger });
-        } catch (err) {
-          return err;
+    ...[
+      controllers,
+      new HttpServer({ port, handlers: [handler] }),
+      {
+        close: async (reason?: string): Promise<MaybeError> => {
+          try {
+            return await deregister({ logger });
+          } catch (err) {
+            return err;
+          }
         }
       }
-    }
+    ].concat(
+      SUPERBLOCKS_AGENT_METRICS_FORWARD
+        ? [new Scheduler({ fn: healthcheck({ deployed_at: new Date() }, logger), logger, name: 'healthcheck' })]
+        : []
+    )
   );
 })();

@@ -11,10 +11,12 @@ import {
 } from '@superblocksteam/shared';
 import { PluginProps } from '@superblocksteam/shared-backend';
 import P from 'pino';
+import { Registry } from 'prom-client';
 import { Socket, Server } from 'socket.io';
 import { NoScheduleError } from './errors';
+import { library, Library } from './metrics';
 import { Auth } from './middleware';
-import { VersionedPluginDefinition, Request, Response, Event, TLSOptions } from './utils';
+import { VersionedPluginDefinition, Request, Response, Event, TLSOptions, Metadata } from './utils';
 import { Worker } from './worker';
 
 export type Options = {
@@ -27,11 +29,7 @@ export type Options = {
   // item is true, the worker must have the requested label. If false,
   // a worker will be elibible even if it doesn't have the label.
   lazyMatching: boolean;
-};
-
-type Filters = {
-  plugin: string;
-  labels?: Record<string, string>;
+  promRegistry: Registry;
 };
 
 type Selector = {
@@ -41,13 +39,19 @@ type Selector = {
 
 interface Client {
   info(): WorkerStatus[];
-  metadata(selector: Selector, dConfig: DatasourceConfiguration, aConfig?: ActionConfiguration): Promise<DatasourceMetadataDto>;
-  test(selector: Selector, dConfig: DatasourceConfiguration): Promise<void>;
-  execute(selector: Selector, props: PluginProps): Promise<ExecutionOutput>;
-  preDelete(selector: Selector, dConfig: DatasourceConfiguration): Promise<void>;
+  metadata(
+    selector: Selector,
+    metadata: Metadata,
+    dConfig: DatasourceConfiguration,
+    aConfig?: ActionConfiguration
+  ): Promise<DatasourceMetadataDto>;
+  test(selector: Selector, metadata: Metadata, dConfig: DatasourceConfiguration): Promise<void>;
+  execute(selector: Selector, metadata: Metadata, props: PluginProps): Promise<ExecutionOutput>;
+  preDelete(selector: Selector, metadata: Metadata, dConfig: DatasourceConfiguration): Promise<void>;
 }
 
 export class Fleet implements Client {
+  private _metrics: Library;
   private _workers: Worker[];
   private _server: Server;
   private _logger: P.Logger;
@@ -58,13 +62,15 @@ export class Fleet implements Client {
   private constructor(logger: P.Logger, options: Options) {
     this._workers = [];
 
+    this._metrics = library(options.promRegistry);
+
     this._httpServer = options.tls.insecure
       ? createServer()
       : createSecureServer({
           allowHTTP1: true,
           key: options.tls.key,
           cert: options.tls.cert,
-          ca: [options.tls.ca],
+          ca: options.tls.ca ? [options.tls.ca] : [],
           requestCert: true
         });
 
@@ -95,7 +101,11 @@ export class Fleet implements Client {
   // Singleton implementation
   public static instance(logger?: P.Logger, options?: Options): Client {
     if (!Fleet._instance) {
-      Fleet._instance = new Fleet(logger, options);
+      if (logger && options) {
+        Fleet._instance = new Fleet(logger, options);
+      } else {
+        throw new TypeError("Can't construct a new fleet instance without logger and connection options");
+      }
     }
     return Fleet._instance;
   }
@@ -109,7 +119,7 @@ export class Fleet implements Client {
   }
 
   private onConnection(socket: Socket): void {
-    const worker = new Worker(this._logger, socket);
+    const worker = new Worker(this._logger, socket, this._metrics);
     this._logger.info(
       {
         worker_id: worker.id()
@@ -133,6 +143,7 @@ export class Fleet implements Client {
 
   private register(worker: Worker): void {
     this._workers.push(worker);
+    this._metrics.workerGauge.inc();
   }
 
   public deregister(workerId: string): void {
@@ -144,6 +155,7 @@ export class Fleet implements Client {
       },
       'removed from fleet'
     );
+    this._metrics.workerGauge.dec();
   }
 
   private selectRandomWorker(workers: Worker[]): Worker {
@@ -153,11 +165,13 @@ export class Fleet implements Client {
   // TODO(frank): I don't like how i'm switching back and forth between
   //              failing fast and succeeding fast. Suseptible to bugs in
   //              condition ordering.
-  private filter(options: Filters): Worker[] {
+  private filter(selector: Selector): Worker[] {
+    const plugin = selector.vpd.version ? `${selector.vpd.name}@${selector.vpd.version}` : selector.vpd.name;
+
     // We're treating `isCordoned` as a non-configurable filter.
     // We'd change this if we want to return cordoned Workers.
     return this._workers.filter((w) => {
-      if (!w.supports(options.plugin)) {
+      if (!w.supports(plugin)) {
         return false;
       }
 
@@ -165,11 +179,11 @@ export class Fleet implements Client {
         return false;
       }
 
-      if (w.hasLabels(options.labels, false)) {
+      if (w.hasLabels(selector.labels ?? {}, false)) {
         return true;
       }
 
-      if (this._options.lazyMatching && w.hasLabels(options.labels, true)) {
+      if (this._options.lazyMatching && w.hasLabels(selector.labels ?? {}, true)) {
         return true;
       }
 
@@ -177,54 +191,100 @@ export class Fleet implements Client {
     });
   }
 
-  private schedule(options: Filters): Worker {
-    const available = this.filter(options);
+  private schedule(selector: Selector): Worker {
+    const available = this.filter(selector);
 
     if (available.length == 0) {
-      this._logger.error({ options }, 'no available workers for options');
-      throw new Error(`There are no workers in the fleet that can execute this step.`);
+      const err = new Error(`There are no workers in the fleet that can execute this step.`);
+      this._logger.error({ selector }, err.message);
+      throw err;
     }
 
     const selected = this.selectRandomWorker(available);
-    this._logger.info({ worker: selected.id() }, 'worker selected');
+    this._logger.info({ selector, worker: selected.id() }, 'worker selected');
 
     return selected;
   }
 
-  public async execute(selector: Selector, pluginProps: PluginProps): Promise<ExecutionOutput> {
-    return (await this._execute(Event.EXECUTE, selector, { pluginProps }))?.executionOutput;
+  public async execute(selector: Selector, metadata: Metadata, pluginProps: PluginProps): Promise<ExecutionOutput> {
+    return (await this._execute(Event.EXECUTE, selector, metadata, { pluginProps }))?.executionOutput ?? new ExecutionOutput();
   }
 
   public async metadata(
     selector: Selector,
+    metadata: Metadata,
     datasourceConfiguration: DatasourceConfiguration,
     actionConfiguration?: ActionConfiguration
   ): Promise<DatasourceMetadataDto> {
-    return (await this._execute(Event.METADATA, selector, { datasourceConfiguration, actionConfiguration }))?.datasourceMetadataDto;
+    return (
+      (await this._execute(Event.METADATA, selector, metadata, { datasourceConfiguration, actionConfiguration }))?.datasourceMetadataDto ??
+      {}
+    );
   }
 
-  public async test(selector: Selector, datasourceConfiguration: DatasourceConfiguration): Promise<void> {
-    await this._execute(Event.TEST, selector, { datasourceConfiguration });
+  public async test(selector: Selector, metadata: Metadata, datasourceConfiguration: DatasourceConfiguration): Promise<void> {
+    await this._execute(Event.TEST, selector, metadata, { datasourceConfiguration });
   }
 
-  public async preDelete(selector: Selector, datasourceConfiguration: DatasourceConfiguration): Promise<void> {
-    await this._execute(Event.PRE_DELETE, selector, { datasourceConfiguration });
+  public async preDelete(selector: Selector, metadata: Metadata, datasourceConfiguration: DatasourceConfiguration): Promise<void> {
+    await this._execute(Event.PRE_DELETE, selector, metadata, { datasourceConfiguration });
   }
 
-  private async _execute(event: Event, selector: Selector, request: Request): Promise<Response> {
+  private async _execute(event: Event, selector: Selector, metadata: Metadata, request: Request): Promise<Response> {
     const plugin = selector.vpd.version ? `${selector.vpd.name}@${selector.vpd.version}` : selector.vpd.name;
+    const invocation = Date.now();
+    const metricLabels = {
+      plugin_name: selector.vpd.name,
+      plugin_version: selector.vpd.version,
+      plugin_event: event,
+      org_id: metadata.orgID,
+      resource_type: metadata.resourceType
+    };
 
-    return await new Retry<Response>(this._options.backoff, this._logger.child({ plugin }), async (): Promise<Response> => {
-      let selected: Worker;
-      try {
-        selected = this.schedule({ plugin, labels: selector.labels });
-        return await selected.execute(event, plugin, request);
-      } catch (err) {
-        if (err instanceof NoScheduleError) {
-          selected.cordon();
+    try {
+      const response: Response = await new Retry<Response>({
+        backoff: this._options.backoff,
+        logger: this._logger.child({ plugin }),
+        doEvery: (): void => this._metrics.retriesTotal?.inc(metricLabels),
+        doOnce: (): void => this._metrics.retriesDistinctTotal?.inc(metricLabels),
+        func: async (): Promise<Response> => {
+          let selected: Worker;
+
+          try {
+            selected = this.schedule(selector);
+            this._metrics.scheduleTotal?.inc({
+              ...metricLabels,
+              result: 'succeeded'
+            });
+          } catch (err) {
+            this._metrics.scheduleTotal?.inc({
+              ...metricLabels,
+              result: 'failed'
+            });
+            throw err;
+          }
+
+          try {
+            return await selected.execute(event, metadata, selector.vpd, request, { invocation });
+          } catch (err) {
+            if (err instanceof NoScheduleError) {
+              selected.cordon();
+            }
+            throw err;
+          }
         }
-        throw err;
-      }
-    }).do();
+      }).do();
+      this._metrics.requestsTotal?.inc({
+        ...metricLabels,
+        result: 'succeeded'
+      });
+      return response;
+    } catch (err) {
+      this._metrics.requestsTotal?.inc({
+        ...metricLabels,
+        result: 'failed'
+      });
+      throw err;
+    }
   }
 }

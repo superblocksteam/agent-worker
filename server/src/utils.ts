@@ -1,5 +1,13 @@
-import { AGENT_KEY_HEADER, AGENT_ID_HEADER, Retry, RetryableError, SupportedPluginVersions, Controller } from '@superblocksteam/shared';
-import { VersionedPluginDefinition, MaybeError } from '@superblocksteam/worker';
+import {
+  AGENT_KEY_HEADER,
+  AGENT_ID_HEADER,
+  Retry,
+  RetryableError,
+  SupportedPluginVersions,
+  Controller,
+  MaybeError
+} from '@superblocksteam/shared';
+import { VersionedPluginDefinition } from '@superblocksteam/worker';
 import axios, { AxiosRequestConfig, Method } from 'axios';
 import P from 'pino';
 import {
@@ -43,15 +51,15 @@ export function baseServerRequest<T>(options: { method: Method; path: string; bo
 }
 
 export async function deregister(options: { logger: P.Logger }): Promise<MaybeError> {
-  await new Retry<void>(
-    {
+  await new Retry<void>({
+    backoff: {
       duration: 1000,
       factor: 2,
       jitter: 0.5,
       limit: 5
     },
-    options?.logger.child({ who: 'deregistration' }),
-    async (): Promise<void> => {
+    logger: options?.logger.child({ who: 'deregistration' }),
+    func: async (): Promise<void> => {
       try {
         await axios(
           baseServerRequest({
@@ -63,20 +71,20 @@ export async function deregister(options: { logger: P.Logger }): Promise<MaybeEr
         throw new RetryableError(err?.response?.data?.responseMeta?.error?.message ?? err.message);
       }
     },
-    'worker deregistration'
-  ).do();
+    name: 'worker deregistration'
+  }).do();
 }
 
 export async function register(options: { logger: P.Logger; vpds: VersionedPluginDefinition[] }): Promise<void> {
-  await new Retry<void>(
-    {
+  await new Retry<void>({
+    backoff: {
       duration: 1000,
       factor: 2,
       jitter: 0.5,
       limit: SUPERBLOCKS_WORKER_REGISTRATION_RETRY_COUNT
     },
-    options?.logger.child({ who: 'registration' }),
-    async (): Promise<void> => {
+    logger: options?.logger.child({ who: 'registration' }),
+    func: async (): Promise<void> => {
       try {
         await axios(
           // NOTE(frank): It'd be nice if the DB entities were in Shared
@@ -96,8 +104,8 @@ export async function register(options: { logger: P.Logger; vpds: VersionedPlugi
         throw new RetryableError(err?.response?.data?.responseMeta?.error?.message ?? err.message);
       }
     },
-    'worker registration'
-  ).do();
+    name: 'worker registration'
+  }).do();
 }
 
 export function delta(actual: { [url: string]: Transport }, desired: Controller[]): { add: Controller[]; remove: string[] } {

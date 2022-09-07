@@ -1,34 +1,77 @@
 import { WorkerMetrics } from '@superblocksteam/shared';
+import { pluginMetricLabels } from '@superblocksteam/worker';
 import axios from 'axios';
 import promBundle from 'express-prom-bundle';
 import P from 'pino';
-import { Counter, Gauge, Registry } from 'prom-client';
+import { Counter, Gauge, Registry, Summary } from 'prom-client';
 import * as si from 'systeminformation';
-import { SUPERBLOCKS_WORKER_VERSION as superblocks_worker_version, SUPERBLOCKS_WORKER_ID as superblocks_worker_id } from './env';
+import { SUPERBLOCKS_WORKER_VERSION as superblocks_worker_version, SUPERBLOCKS_AGENT_METRICS_DEFAULT } from './env';
 import { baseServerRequest } from './utils';
 
 export const registry = new Registry();
-registry.setDefaultLabels({ superblocks_worker_version, superblocks_worker_id });
+registry.setDefaultLabels({ component: 'worker' });
+export const prefix = 'superblocks_worker_';
 
 export const busyCount = new Counter({
-  name: 'superblocks_worker_busy_count_total',
+  name: `${prefix}busy_count_total`,
   help: 'Count of busy responses sent by the worker to the controller.',
+  labelNames: pluginMetricLabels,
   registers: [registry]
 });
 
-export const controllerGuage = new Gauge({
-  name: 'superblocks_worker_active_controllers',
+export const activeGauge = new Gauge({
+  name: `${prefix}active`,
+  help: 'Number of active things being done by the worker.',
+  labelNames: pluginMetricLabels,
+  registers: [registry]
+});
+
+export const controllerGauge = new Gauge({
+  name: `${prefix}active_controllers`,
   help: 'Number of controllers in the fleet.',
+  registers: [registry]
+});
+
+export const pluginGauge = new Gauge({
+  name: `${prefix}plugins_total`,
+  help: 'The plugins that are registered by this worker.',
+  labelNames: pluginMetricLabels,
+  registers: [registry]
+});
+
+export const executionLatency = new Summary({
+  name: 'superblocks_controller_execution_latency_milliseconds',
+  help: 'Latency from when the controller sends a request to when it is scheduled by the worker for execution.',
+  percentiles: [0.01, 0.5, 0.9, 0.95, 0.99, 1],
+  labelNames: [...pluginMetricLabels, 'event'],
+  registers: [registry]
+});
+
+export const socketRequestLatency = new Summary({
+  name: 'superblocks_controller_socket_request_latency_milliseconds',
+  help: 'Latency from when the controller sends a request to when the worker receives it.',
+  percentiles: [0.01, 0.5, 0.9, 0.95, 0.99, 1],
+  labelNames: pluginMetricLabels,
+  registers: [registry]
+});
+
+export const pluginDuration = new Summary({
+  name: 'superblocks_controller_plugin_duration_milliseconds',
+  help: 'Duration of plugin request.',
+  percentiles: [0.01, 0.5, 0.9, 0.95, 0.99, 1],
+  labelNames: [...pluginMetricLabels, 'event'],
   registers: [registry]
 });
 
 export const handler = promBundle({
   metricsPath: '/metrics',
   promClient: {
-    collectDefaultMetrics: {
-      register: registry,
-      prefix: 'superblocks_worker_'
-    }
+    collectDefaultMetrics: SUPERBLOCKS_AGENT_METRICS_DEFAULT
+      ? {
+          register: registry,
+          prefix
+        }
+      : {}
   },
   promRegistry: registry
 });
@@ -48,7 +91,7 @@ export function healthcheck(constant: WorkerMetrics, logger: P.Logger): () => Pr
         reported_at: new Date(),
         version: superblocks_worker_version,
         busyCount: busyCount?.['hashMap']?.['']?.['value'] ?? 0,
-        activeControllers: controllerGuage?.['hashMap']?.['']?.['value'] ?? 0
+        activeControllers: controllerGauge?.['hashMap']?.['']?.['value'] ?? 0
       };
       resetMetrics();
 
