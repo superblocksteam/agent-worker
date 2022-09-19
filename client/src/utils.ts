@@ -1,10 +1,4 @@
-import {
-  ExecutionOutput,
-  DatasourceConfiguration,
-  DatasourceMetadataDto,
-  ActionConfiguration,
-  EventEntityType
-} from '@superblocksteam/shared';
+import { ExecutionOutput, DatasourceConfiguration, DatasourceMetadataDto, ActionConfiguration } from '@superblocksteam/shared';
 import { PluginProps } from '@superblocksteam/shared-backend';
 
 export type TLSOptions = {
@@ -46,5 +40,9 @@ export type Timings = {
 
 export type Metadata = {
   orgID?: string;
-  resourceType?: EventEntityType;
+  carrier?: Record<string, string>;
+  // agnostic trace tags sent from the controller that the worker should blindly append to every trace
+  extraTraceTags?: Record<string, string>;
+  // agnostic metric tags sent from the controller that the worker should blindly append to every metric
+  extraMetricTags?: Record<string, string | number>;
 };

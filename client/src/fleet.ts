@@ -1,5 +1,6 @@
 import { createServer } from 'http';
 import { createSecureServer, Http2Server } from 'http2';
+import { Tracer, SpanKind, SpanStatusCode, Span, propagation, context } from '@opentelemetry/api';
 import {
   ActionConfiguration,
   ExecutionOutput,
@@ -7,7 +8,12 @@ import {
   DatasourceConfiguration,
   DatasourceMetadataDto,
   Backoff,
-  Retry
+  Retry,
+  OBS_TAG_PLUGIN_NAME,
+  OBS_TAG_PLUGIN_VERSION,
+  OBS_TAG_PLUGIN_EVENT,
+  OBS_TAG_ORG_ID,
+  toMetricLabels
 } from '@superblocksteam/shared';
 import { PluginProps } from '@superblocksteam/shared-backend';
 import P from 'pino';
@@ -30,6 +36,7 @@ export type Options = {
   // a worker will be elibible even if it doesn't have the label.
   lazyMatching: boolean;
   promRegistry: Registry;
+  tracer: () => Tracer;
 };
 
 type Selector = {
@@ -233,58 +240,95 @@ export class Fleet implements Client {
   private async _execute(event: Event, selector: Selector, metadata: Metadata, request: Request): Promise<Response> {
     const plugin = selector.vpd.version ? `${selector.vpd.name}@${selector.vpd.version}` : selector.vpd.name;
     const invocation = Date.now();
-    const metricLabels = {
-      plugin_name: selector.vpd.name,
-      plugin_version: selector.vpd.version,
-      plugin_event: event,
-      org_id: metadata.orgID,
-      resource_type: metadata.resourceType
+    const traceTags = {
+      [OBS_TAG_PLUGIN_NAME]: selector.vpd.name,
+      [OBS_TAG_PLUGIN_VERSION]: selector.vpd.version,
+      [OBS_TAG_PLUGIN_EVENT]: event as string,
+      [OBS_TAG_ORG_ID]: metadata.orgID as string
     };
+    const metricsTags = toMetricLabels({
+      ...metadata.extraMetricTags,
+      [OBS_TAG_PLUGIN_NAME]: selector.vpd.name,
+      [OBS_TAG_PLUGIN_VERSION]: selector.vpd.version,
+      [OBS_TAG_PLUGIN_EVENT]: event as string,
+      [OBS_TAG_ORG_ID]: metadata.orgID as string,
 
-    try {
-      const response: Response = await new Retry<Response>({
-        backoff: this._options.backoff,
-        logger: this._logger.child({ plugin }),
-        doEvery: (): void => this._metrics.retriesTotal?.inc(metricLabels),
-        doOnce: (): void => this._metrics.retriesDistinctTotal?.inc(metricLabels),
-        func: async (): Promise<Response> => {
-          let selected: Worker;
+      // TODO(frank): deprecate after dashboards are updated with the above
+      org_id: metadata.orgID as string
+    }) as Record<string, string | number>;
 
-          try {
-            selected = this.schedule(selector);
-            this._metrics.scheduleTotal?.inc({
-              ...metricLabels,
-              result: 'succeeded'
-            });
-          } catch (err) {
-            this._metrics.scheduleTotal?.inc({
-              ...metricLabels,
-              result: 'failed'
-            });
-            throw err;
-          }
+    return await this._options.tracer().startActiveSpan(
+      `${event.toUpperCase()} ${plugin}`,
+      {
+        attributes: {
+          ...traceTags,
+          ...metadata.extraTraceTags
+        },
+        kind: SpanKind.SERVER
+      },
+      async (span: Span): Promise<Response> => {
+        try {
+          const response: Response = await new Retry<Response>({
+            backoff: this._options.backoff,
+            logger: this._logger.child({ plugin }),
+            doEvery: (): void => this._metrics.retriesTotal?.inc(metricsTags),
+            doOnce: (): void => this._metrics.retriesDistinctTotal?.inc(metricsTags),
+            func: async (): Promise<Response> => {
+              let selected: Worker;
 
-          try {
-            return await selected.execute(event, metadata, selector.vpd, request, { invocation });
-          } catch (err) {
-            if (err instanceof NoScheduleError) {
-              selected.cordon();
+              try {
+                selected = this.schedule(selector);
+                this._metrics.scheduleTotal?.inc({
+                  ...metricsTags,
+                  result: 'succeeded'
+                });
+              } catch (err) {
+                this._metrics.scheduleTotal?.inc({
+                  ...metricsTags,
+                  result: 'failed'
+                });
+                throw err;
+              }
+
+              try {
+                // QUESTION(frank): is there a more typescript-ish defaulting way to do this
+                if (!metadata.carrier) {
+                  metadata.carrier = {};
+                }
+
+                propagation.inject(context.active(), metadata.carrier);
+
+                return await selected.execute(event, metadata, selector.vpd, request, {
+                  invocation
+                });
+              } catch (err) {
+                if (err instanceof NoScheduleError) {
+                  selected.cordon();
+                }
+                throw err;
+              }
             }
-            throw err;
-          }
+          }).do();
+          span.setStatus({ code: SpanStatusCode.OK });
+
+          this._metrics.requestsTotal?.inc({
+            ...metricsTags,
+            result: 'succeeded'
+          });
+          return response;
+        } catch (err) {
+          span.setStatus({ code: SpanStatusCode.ERROR });
+          span.recordException(err);
+
+          this._metrics.requestsTotal?.inc({
+            ...metricsTags,
+            result: 'failed'
+          });
+          throw err;
+        } finally {
+          span.end();
         }
-      }).do();
-      this._metrics.requestsTotal?.inc({
-        ...metricLabels,
-        result: 'succeeded'
-      });
-      return response;
-    } catch (err) {
-      this._metrics.requestsTotal?.inc({
-        ...metricLabels,
-        result: 'failed'
-      });
-      throw err;
-    }
+      }
+    );
   }
 }

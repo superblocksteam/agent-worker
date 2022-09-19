@@ -1,4 +1,13 @@
-import { leveledLogFn, wrapError, WorkerStatus } from '@superblocksteam/shared';
+import {
+  leveledLogFn,
+  wrapError,
+  WorkerStatus,
+  OBS_TAG_PLUGIN_NAME,
+  OBS_TAG_PLUGIN_VERSION,
+  OBS_TAG_PLUGIN_EVENT,
+  OBS_TAG_ORG_ID,
+  toMetricLabels
+} from '@superblocksteam/shared';
 import P from 'pino';
 import { Socket } from 'socket.io';
 import { unmarshal, ErrorEncoding } from './errors';
@@ -145,13 +154,16 @@ export class Worker {
           (_response: Response, _timings: Timings, _err: ErrorEncoding) => {
             logger.info('received response from worker');
             this._metrics.socketResponseLatency.observe(
-              {
-                resource_type: metadata.resourceType,
-                org_id: metadata.orgID,
-                plugin_event: event,
-                plugin_name: vpd.name,
-                plugin_version: vpd.version
-              },
+              toMetricLabels({
+                ...metadata.extraMetricTags,
+                [OBS_TAG_PLUGIN_NAME]: vpd.name,
+                [OBS_TAG_PLUGIN_VERSION]: vpd.version,
+                [OBS_TAG_PLUGIN_EVENT]: event as string,
+                [OBS_TAG_ORG_ID]: metadata.orgID as string,
+
+                // TODO(frank): deprecate after dashboards are updated with the above
+                org_id: metadata.orgID as string
+              }) as Record<string, string>,
               Date.now() - (_timings.socketResponse ?? 0)
             );
             _err ? reject(unmarshal(_err)) : resolve(_response);

@@ -10,6 +10,10 @@ const envs = new EnvStore(process.env);
 
 envs.addAll([
   {
+    name: '__SUPERBLOCKS_AGENT_DOMAIN',
+    defaultValue: 'superblocks.com'
+  },
+  {
     name: '__SUPERBLOCKS_WORKER_ID',
     defaultValue: null
   },
@@ -19,7 +23,7 @@ envs.addAll([
   },
   {
     name: '__SUPERBLOCKS_WORKER_VERSION',
-    defaultValue: 'unknown'
+    defaultValue: 'v0.0.0'
   },
   {
     name: 'SUPERBLOCKS_AGENT_KEY'
@@ -145,5 +149,6 @@ export const SUPERBLOCKS_WORKER_METRICS_PORT = Number(envs.get('SUPERBLOCKS_WORK
 export const SUPERBLOCKS_WORKER_EXECUTION_PYTHON_TIMEOUT_MS: string = envs.get('SUPERBLOCKS_WORKER_EXECUTION_PYTHON_TIMEOUT_MS');
 export const SUPERBLOCKS_WORKER_EXECUTION_JS_TIMEOUT_MS: string = envs.get('SUPERBLOCKS_WORKER_EXECUTION_JS_TIMEOUT_MS');
 export const SUPERBLOCKS_WORKER_EXECUTION_REST_API_TIMEOUT_MS = Number(envs.get('SUPERBLOCKS_WORKER_EXECUTION_REST_API_TIMEOUT_MS'));
+export const SUPERBLOCKS_AGENT_DOMAIN: string = envs.get('__SUPERBLOCKS_AGENT_DOMAIN');
 
 export default envs;

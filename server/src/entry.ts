@@ -2,7 +2,6 @@ import { readFileSync } from 'fs';
 import { MaybeError } from '@superblocksteam/shared';
 import { Closer, shutdownHandlers, HttpServer } from '@superblocksteam/shared-backend';
 import { VersionedPluginDefinition, TLSOptions } from '@superblocksteam/worker';
-import tracer from 'dd-trace';
 import { ControllerFleet } from './controller';
 import dependencies from './dependencies';
 import {
@@ -23,11 +22,8 @@ import logger from './logger';
 import { handler, healthcheck } from './metrics';
 import { load } from './plugin';
 import { Scheduler } from './scheduler';
+import tracer from './tracer';
 import { register, deregister } from './utils';
-
-tracer.init({
-  logInjection: true
-});
 
 let vpds: VersionedPluginDefinition[];
 
@@ -87,6 +83,15 @@ try {
         close: async (reason?: string): Promise<MaybeError> => {
           try {
             return await deregister({ logger });
+          } catch (err) {
+            return err;
+          }
+        }
+      },
+      {
+        close: async (reason?: string): Promise<MaybeError> => {
+          try {
+            await tracer.shutdown();
           } catch (err) {
             return err;
           }

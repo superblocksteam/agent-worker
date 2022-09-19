@@ -1,5 +1,14 @@
-import { Retry, MaybeError } from '@superblocksteam/shared';
-import { Closer } from '@superblocksteam/shared-backend';
+import { SpanKind, Span, propagation, ROOT_CONTEXT } from '@opentelemetry/api';
+import {
+  Retry,
+  MaybeError,
+  OBS_TAG_PLUGIN_NAME,
+  OBS_TAG_PLUGIN_VERSION,
+  OBS_TAG_PLUGIN_EVENT,
+  OBS_TAG_WORKER_ID,
+  toMetricLabels
+} from '@superblocksteam/shared';
+import { Closer, observe } from '@superblocksteam/shared-backend';
 import {
   VersionedPluginDefinition,
   Event,
@@ -13,11 +22,12 @@ import {
 } from '@superblocksteam/worker';
 import pino from 'pino';
 import { io, Socket } from 'socket.io-client';
+import { SUPERBLOCKS_WORKER_ID } from './env';
 import { Interceptor, RateLimiter, Scheduler } from './interceptor';
 import logger from './logger';
 import { pluginGauge, socketRequestLatency, pluginDuration, executionLatency } from './metrics';
 import { Plugin, RunFunc } from './plugin';
-import tracer from './tracer';
+import { getTracer } from './tracer';
 
 export type Options = {
   address: string;
@@ -136,68 +146,61 @@ export class SocketIO implements Transport {
       _timings: Timings,
       callback: (_response: Response, _timings: Timings, _err: ErrorEncoding) => void
     ): Promise<void> => {
-      socketRequestLatency.observe(
+      const commonTags: Record<string, string> = {
+        [OBS_TAG_PLUGIN_NAME]: plugin.name(),
+        [OBS_TAG_PLUGIN_VERSION]: plugin.version(),
+        [OBS_TAG_PLUGIN_EVENT]: _event as string
+      };
+      const traceTags: Record<string, string> = {
+        ...commonTags,
+        ..._metadata.extraTraceTags,
+        [OBS_TAG_WORKER_ID]: SUPERBLOCKS_WORKER_ID
+      };
+      const metricTags = toMetricLabels({
+        ...commonTags,
+        ..._metadata.extraMetricTags,
+
+        // TODO(frank): deprecate after dashboards are updated with the above
+        org_id: _metadata.orgID as string
+      }) as Record<string, string | number>;
+
+      socketRequestLatency.observe(metricTags, Date.now() - _timings.socketRequest);
+
+      const { resp, err } = await getTracer().startActiveSpan(
+        `${_event.toUpperCase()} ${plugin.version() ? `${plugin.name()}@${plugin.version()}` : plugin.name()}`,
         {
-          org_id: _metadata.orgID,
-          resource_type: _metadata.resourceType,
-          plugin_name: plugin.name(),
-          plugin_version: plugin.version(),
-          plugin_event: _event
+          attributes: traceTags,
+          kind: SpanKind.SERVER
         },
-        Date.now() - _timings.socketRequest
-      );
-
-      const { resp, err } = await tracer.trace(
-        'plugin execution',
-        {
-          tags: {
-            plugin: {
-              event: _event,
-              name: plugin.name(),
-              version: plugin.version()
+        propagation.extract(ROOT_CONTEXT, _metadata.carrier),
+        async (span: Span): Promise<{ resp?: Response; err?: Error }> => {
+          try {
+            for (const interceptor of this._interceptors) {
+              const err = interceptor?.before(plugin);
+              if (err) {
+                return { err };
+              }
             }
-          }
-        },
-        async (): Promise<{ resp?: Response; err?: Error }> => {
-          for (const interceptor of this._interceptors) {
-            const err = interceptor?.before(plugin);
-            if (err) {
-              return { err };
+
+            executionLatency.observe(metricTags, Date.now() - _timings.invocation);
+
+            const { resp, err } = await observe<{ resp?: Response; err?: Error }>(
+              pluginDuration,
+              metricTags,
+              async (): Promise<{ resp?: Response; err?: Error }> => await plugin.run(_event, _request)
+            );
+
+            for (const interceptor of this._interceptors) {
+              const err = interceptor?.after(plugin);
+              if (err) {
+                return { err };
+              }
             }
+
+            return { resp, err };
+          } finally {
+            span.end();
           }
-
-          executionLatency.observe(
-            {
-              plugin_name: plugin.name(),
-              plugin_version: plugin.version(),
-              plugin_event: _event,
-              org_id: _metadata.orgID,
-              resource_type: _metadata.resourceType
-            },
-            Date.now() - _timings.invocation
-          );
-
-          const startTime = Date.now();
-          const { resp, err } = await plugin.run(_event, _request);
-
-          pluginDuration.observe(
-            {
-              plugin_name: plugin.name(),
-              plugin_version: plugin.version(),
-              plugin_event: _event,
-              org_id: _metadata.orgID,
-              resource_type: _metadata.resourceType
-            },
-            Date.now() - startTime
-          );
-          for (const interceptor of this._interceptors) {
-            const err = interceptor?.after(plugin);
-            if (err) {
-              return { err };
-            }
-          }
-
-          return { resp, err };
         }
       );
 
@@ -214,10 +217,12 @@ export class SocketIO implements Transport {
         {
           ack,
           plugins: this._plugins.map((plugin) => {
-            pluginGauge.inc({
-              plugin_name: plugin.name,
-              plugin_version: plugin.version
-            });
+            pluginGauge.inc(
+              toMetricLabels({
+                [OBS_TAG_PLUGIN_NAME]: plugin.name,
+                [OBS_TAG_PLUGIN_VERSION]: plugin.version
+              }) as Record<string, string>
+            );
             return `${plugin.name}@${plugin.version}`;
           })
         },

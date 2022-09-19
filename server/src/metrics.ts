@@ -43,7 +43,7 @@ export const executionLatency = new Summary({
   name: 'superblocks_controller_execution_latency_milliseconds',
   help: 'Latency from when the controller sends a request to when it is scheduled by the worker for execution.',
   percentiles: [0.01, 0.5, 0.9, 0.95, 0.99, 1],
-  labelNames: [...pluginMetricLabels, 'event'],
+  labelNames: [...pluginMetricLabels],
   registers: [registry]
 });
 
@@ -59,7 +59,7 @@ export const pluginDuration = new Summary({
   name: 'superblocks_controller_plugin_duration_milliseconds',
   help: 'Duration of plugin request.',
   percentiles: [0.01, 0.5, 0.9, 0.95, 0.99, 1],
-  labelNames: [...pluginMetricLabels, 'event'],
+  labelNames: [...pluginMetricLabels],
   registers: [registry]
 });
 

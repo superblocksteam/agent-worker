@@ -1,6 +1,23 @@
+import {
+  OBS_TAG_PLUGIN_NAME,
+  OBS_TAG_PLUGIN_VERSION,
+  OBS_TAG_PLUGIN_EVENT,
+  OBS_TAG_ORG_ID,
+  OBS_TAG_RESOURCE_TYPE,
+  toMetricLabels
+} from '@superblocksteam/shared';
 import { Counter, Registry, Summary, Gauge } from 'prom-client';
 
-export const pluginMetricLabels: string[] = ['plugin_name', 'plugin_version', 'plugin_event', 'org_id', 'resource_type'];
+export const pluginMetricLabels: string[] = toMetricLabels([
+  OBS_TAG_PLUGIN_NAME,
+  OBS_TAG_PLUGIN_VERSION,
+  OBS_TAG_PLUGIN_EVENT,
+  OBS_TAG_ORG_ID,
+  OBS_TAG_RESOURCE_TYPE,
+
+  // TODO(frank): deprecate after dashboards are updated with the above
+  'org_id'
+]) as string[];
 
 export type Library = {
   scheduleTotal: Counter;

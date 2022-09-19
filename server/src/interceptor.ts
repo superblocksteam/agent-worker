@@ -1,4 +1,4 @@
-import { RetryableError, MaybeError } from '@superblocksteam/shared';
+import { RetryableError, MaybeError, OBS_TAG_PLUGIN_NAME, OBS_TAG_PLUGIN_VERSION, toMetricLabels } from '@superblocksteam/shared';
 import { BusyError, NoScheduleError } from '@superblocksteam/worker';
 import { busyCount, activeGauge } from './metrics';
 import { Plugin } from './plugin';
@@ -49,24 +49,34 @@ export class RateLimiter implements Interceptor {
       this._active--;
       // TODO(frank): Find a clean way to take this in as a class field instead of globally.
       //              As is, this class isn't reuseable.
-      busyCount.inc({
-        plugin_name: plugin.name(),
-        plugin_version: plugin.version()
-      });
+      busyCount.inc(
+        toMetricLabels({
+          [OBS_TAG_PLUGIN_NAME]: plugin.name(),
+          [OBS_TAG_PLUGIN_VERSION]: plugin.version()
+        }) as Record<string, string>
+      );
       return new BusyError(`This worker has reached its limit of ${this._active} active tasks.`);
     }
-    activeGauge.inc({
-      plugin_name: plugin.name(),
-      plugin_version: plugin.version()
-    });
+    activeGauge.inc(
+      toMetricLabels({
+        [OBS_TAG_PLUGIN_NAME]: plugin.name(),
+        [OBS_TAG_PLUGIN_VERSION]: plugin.version(),
+
+        // TODO(frank): deprecate after dashboards are updated with the above
+        plugin_name: plugin.name(),
+        plugin_version: plugin.version()
+      }) as Record<string, string>
+    );
   }
 
   public after(plugin: Plugin): MaybeError {
     this._active--;
-    activeGauge.dec({
-      plugin_name: plugin.name(),
-      plugin_version: plugin.version()
-    });
+    activeGauge.dec(
+      toMetricLabels({
+        [OBS_TAG_PLUGIN_NAME]: plugin.name(),
+        [OBS_TAG_PLUGIN_VERSION]: plugin.version()
+      }) as Record<string, string>
+    );
   }
 
   public check(): void {
