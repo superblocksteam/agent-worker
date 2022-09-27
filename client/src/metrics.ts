@@ -6,7 +6,7 @@ import {
   OBS_TAG_RESOURCE_TYPE,
   toMetricLabels
 } from '@superblocksteam/shared';
-import { Counter, Registry, Summary, Gauge } from 'prom-client';
+import { Counter, Registry, Histogram, Gauge } from 'prom-client';
 
 export const pluginMetricLabels: string[] = toMetricLabels([
   OBS_TAG_PLUGIN_NAME,
@@ -24,7 +24,7 @@ export type Library = {
   retriesTotal: Counter;
   requestsTotal: Counter;
   retriesDistinctTotal: Counter;
-  socketResponseLatency: Summary;
+  socketResponseLatency: Histogram;
   workerGauge: Gauge;
 };
 
@@ -57,10 +57,10 @@ export const library = (registry: Registry): Library => {
     registers: [registry]
   });
 
-  const socketResponseLatency = new Summary({
+  const socketResponseLatency = new Histogram({
     name: 'superblocks_controller_socket_response_latency_milliseconds',
     help: 'Latency from when the worker sends a response to when the controller receives it.',
-    percentiles: [0.01, 0.5, 0.9, 0.95, 0.99, 1],
+    buckets: [1, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 1500, 2000],
     labelNames: pluginMetricLabels,
     registers: [registry]
   });

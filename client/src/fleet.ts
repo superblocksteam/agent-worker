@@ -1,6 +1,6 @@
 import { createServer } from 'http';
 import { createSecureServer, Http2Server } from 'http2';
-import { Tracer, SpanKind, SpanStatusCode, Span, propagation, context } from '@opentelemetry/api';
+import { Tracer, SpanKind, SpanStatusCode, Span, context, propagation } from '@opentelemetry/api';
 import {
   ActionConfiguration,
   ExecutionOutput,
@@ -22,7 +22,7 @@ import { Socket, Server } from 'socket.io';
 import { NoScheduleError } from './errors';
 import { library, Library } from './metrics';
 import { Auth } from './middleware';
-import { VersionedPluginDefinition, Request, Response, Event, TLSOptions, Metadata } from './utils';
+import { SortedArray, VersionedPluginDefinition, Request, Response, Event, TLSOptions, Metadata } from './utils';
 import { Worker } from './worker';
 
 export type Options = {
@@ -46,6 +46,7 @@ type Selector = {
 
 interface Client {
   info(): WorkerStatus[];
+  ready(plugins?: string[]): boolean;
   metadata(
     selector: Selector,
     metadata: Metadata,
@@ -57,9 +58,11 @@ interface Client {
   preDelete(selector: Selector, metadata: Metadata, dConfig: DatasourceConfiguration): Promise<void>;
 }
 
+export type AlgorithmFunc = (workers: SortedArray<Worker>) => Worker;
+
 export class Fleet implements Client {
   private _metrics: Library;
-  private _workers: Worker[];
+  private _workers: SortedArray<Worker>;
   private _server: Server;
   private _logger: P.Logger;
   private _options: Options;
@@ -67,7 +70,9 @@ export class Fleet implements Client {
   private static _instance: Client;
 
   private constructor(logger: P.Logger, options: Options) {
-    this._workers = [];
+    this._workers = new SortedArray<Worker>((w1: Worker, w2: Worker): number => {
+      return w1.id() < w2.id() ? -1 : 1;
+    });
 
     this._metrics = library(options.promRegistry);
 
@@ -102,7 +107,34 @@ export class Fleet implements Client {
   }
 
   public info(): WorkerStatus[] {
-    return this._workers.map((worker) => worker.info());
+    return this._workers
+      .map<WorkerStatus>((worker: Worker): WorkerStatus => worker.info())
+      .filter((w: WorkerStatus): boolean => !w.cordoned);
+  }
+
+  public ready(plugins?: string[]): boolean {
+    const available = this._workers.filter((w: Worker): boolean => !w.isCordoned());
+
+    if (!plugins || plugins.length === 0) {
+      return available.size() !== 0;
+    }
+
+    for (const plugin of plugins) {
+      let supported = false;
+
+      for (const worker of available) {
+        if (worker.supports(plugin)) {
+          supported = true;
+          break;
+        }
+      }
+
+      if (!supported) {
+        return false;
+      }
+    }
+
+    return true;
   }
 
   // Singleton implementation
@@ -149,7 +181,7 @@ export class Fleet implements Client {
   }
 
   private register(worker: Worker): void {
-    this._workers.push(worker);
+    this._workers.add(worker);
     this._metrics.workerGauge.inc();
   }
 
@@ -165,19 +197,15 @@ export class Fleet implements Client {
     this._metrics.workerGauge.dec();
   }
 
-  private selectRandomWorker(workers: Worker[]): Worker {
-    return workers[Math.floor(Math.random() * workers.length)];
-  }
-
   // TODO(frank): I don't like how i'm switching back and forth between
   //              failing fast and succeeding fast. Suseptible to bugs in
   //              condition ordering.
-  private filter(selector: Selector): Worker[] {
+  private filter(selector: Selector): SortedArray<Worker> {
     const plugin = selector.vpd.version ? `${selector.vpd.name}@${selector.vpd.version}` : selector.vpd.name;
 
     // We're treating `isCordoned` as a non-configurable filter.
     // We'd change this if we want to return cordoned Workers.
-    return this._workers.filter((w) => {
+    return this._workers.filter((w: Worker): boolean => {
       if (!w.supports(plugin)) {
         return false;
       }
@@ -198,16 +226,16 @@ export class Fleet implements Client {
     });
   }
 
-  private schedule(selector: Selector): Worker {
+  private schedule(selector: Selector, algorithm: AlgorithmFunc): Worker {
     const available = this.filter(selector);
 
-    if (available.length == 0) {
+    if (available.size() == 0) {
       const err = new Error(`There are no workers in the fleet that can execute this step.`);
       this._logger.error({ selector }, err.message);
       throw err;
     }
 
-    const selected = this.selectRandomWorker(available);
+    const selected = algorithm(available);
     this._logger.info({ selector, worker: selected.id() }, 'worker selected');
 
     return selected;
@@ -257,77 +285,100 @@ export class Fleet implements Client {
       org_id: metadata.orgID as string
     }) as Record<string, string | number>;
 
-    return await this._options.tracer().startActiveSpan(
-      `${event.toUpperCase()} ${plugin}`,
-      {
-        attributes: {
-          ...traceTags,
-          ...metadata.extraTraceTags
-        },
-        kind: SpanKind.SERVER
+    const spanOptions = {
+      attributes: {
+        ...traceTags,
+        ...metadata.extraTraceTags
       },
-      async (span: Span): Promise<Response> => {
-        try {
-          const response: Response = await new Retry<Response>({
-            backoff: this._options.backoff,
-            logger: this._logger.child({ plugin }),
-            doEvery: (): void => this._metrics.retriesTotal?.inc(metricsTags),
-            doOnce: (): void => this._metrics.retriesDistinctTotal?.inc(metricsTags),
-            func: async (): Promise<Response> => {
-              let selected: Worker;
+      kind: SpanKind.SERVER
+    };
 
-              try {
-                selected = this.schedule(selector);
-                this._metrics.scheduleTotal?.inc({
-                  ...metricsTags,
-                  result: 'succeeded'
-                });
-              } catch (err) {
-                this._metrics.scheduleTotal?.inc({
-                  ...metricsTags,
-                  result: 'failed'
-                });
-                throw err;
-              }
+    const baggageEntries = {};
+    Object.entries(spanOptions.attributes).forEach((value) => {
+      baggageEntries[value[0]] = { value: value[1] as string };
+    });
 
-              try {
-                // QUESTION(frank): is there a more typescript-ish defaulting way to do this
-                if (!metadata.carrier) {
-                  metadata.carrier = {};
+    return context.with(
+      propagation.setBaggage(context.active(), propagation.createBaggage(baggageEntries)),
+      async (): Promise<Response> => {
+        return await this._options
+          .tracer()
+          .startActiveSpan(`${event.toUpperCase()} ${plugin}`, spanOptions, async (span: Span): Promise<Response> => {
+            try {
+              // This is needed to provide a random starting point every time.
+              // If we did not have this, we always try the same worker first.
+              // Edge cases would then exists for a non-concurrency-constrained
+              // worker fleet would only every use one worker.
+              const offset: number = Math.floor(Math.random() * 1000);
+
+              const response: Response = await new Retry<Response>({
+                backoff: this._options.backoff,
+                logger: this._logger.child({ plugin }),
+                doEvery: (): void => this._metrics.retriesTotal?.inc(metricsTags),
+                doOnce: (): void => this._metrics.retriesDistinctTotal?.inc(metricsTags),
+                tracer: this._options.tracer(),
+                spanName: `SCHEDULE ${plugin}`,
+                spanOptions: spanOptions,
+                func: async (attempt: number): Promise<Response> => {
+                  let selected: Worker;
+
+                  try {
+                    selected = this.schedule(
+                      selector,
+                      (workers: SortedArray<Worker>): Worker => workers.get((attempt++ + offset) % workers.size()) as Worker
+                    );
+
+                    this._metrics.scheduleTotal?.inc({
+                      ...metricsTags,
+                      result: 'succeeded'
+                    });
+                  } catch (err) {
+                    this._metrics.scheduleTotal?.inc({
+                      ...metricsTags,
+                      result: 'failed'
+                    });
+                    throw err;
+                  }
+
+                  try {
+                    // QUESTION(frank): is there a more typescript-ish defaulting way to do this
+                    if (!metadata.carrier) {
+                      metadata.carrier = {};
+                    }
+
+                    propagation.inject(context.active(), metadata.carrier);
+
+                    return await selected.execute(event, metadata, selector.vpd, request, {
+                      invocation
+                    });
+                  } catch (err) {
+                    if (err instanceof NoScheduleError) {
+                      selected.cordon();
+                    }
+                    throw err;
+                  }
                 }
+              }).do();
+              span.setStatus({ code: SpanStatusCode.OK });
 
-                propagation.inject(context.active(), metadata.carrier);
+              this._metrics.requestsTotal?.inc({
+                ...metricsTags,
+                result: 'succeeded'
+              });
+              return response;
+            } catch (err) {
+              span.setStatus({ code: SpanStatusCode.ERROR });
+              span.recordException(err);
 
-                return await selected.execute(event, metadata, selector.vpd, request, {
-                  invocation
-                });
-              } catch (err) {
-                if (err instanceof NoScheduleError) {
-                  selected.cordon();
-                }
-                throw err;
-              }
+              this._metrics.requestsTotal?.inc({
+                ...metricsTags,
+                result: 'failed'
+              });
+              throw err;
+            } finally {
+              span.end();
             }
-          }).do();
-          span.setStatus({ code: SpanStatusCode.OK });
-
-          this._metrics.requestsTotal?.inc({
-            ...metricsTags,
-            result: 'succeeded'
           });
-          return response;
-        } catch (err) {
-          span.setStatus({ code: SpanStatusCode.ERROR });
-          span.recordException(err);
-
-          this._metrics.requestsTotal?.inc({
-            ...metricsTags,
-            result: 'failed'
-          });
-          throw err;
-        } finally {
-          span.end();
-        }
       }
     );
   }

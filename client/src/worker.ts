@@ -56,6 +56,10 @@ export class Worker {
   private extractLabels(): void {
     this._labels = {};
 
+    if (!this._socket.handshake) {
+      return;
+    }
+
     Object.keys(this._socket.handshake.headers).forEach((header: string) => {
       if (!header.startsWith('x-superblocks-label-')) {
         return;

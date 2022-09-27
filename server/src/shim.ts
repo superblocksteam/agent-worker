@@ -11,6 +11,7 @@ import {
 } from './env';
 import logger from './logger';
 import { Plugin } from './plugin';
+import { getTracer } from './tracer';
 
 // Shim connects a BasePlugin to a Transport. Once we've deprecated
 // the old architecture, there's no reason why BasePlugin can't implement
@@ -28,6 +29,7 @@ export class Shim<T extends BasePlugin> implements Plugin {
     this._logger = _logger || logger.child({ name, version });
 
     this._plugin.attachLogger(this._logger);
+    this._plugin.attachTracer(getTracer());
     this.run = this.run.bind(this);
   }
 
@@ -88,7 +90,9 @@ export class Shim<T extends BasePlugin> implements Plugin {
         }
         case Event.METADATA: {
           return {
-            resp: { datasourceMetadataDto: await this._plugin.metadata(_request.datasourceConfiguration, _request.actionConfiguration) }
+            resp: {
+              datasourceMetadataDto: await this._plugin.metadata(_request.datasourceConfiguration, _request.actionConfiguration)
+            }
           };
         }
         default: {

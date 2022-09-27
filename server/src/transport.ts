@@ -5,7 +5,6 @@ import {
   OBS_TAG_PLUGIN_NAME,
   OBS_TAG_PLUGIN_VERSION,
   OBS_TAG_PLUGIN_EVENT,
-  OBS_TAG_WORKER_ID,
   toMetricLabels
 } from '@superblocksteam/shared';
 import { Closer, observe } from '@superblocksteam/shared-backend';
@@ -22,7 +21,6 @@ import {
 } from '@superblocksteam/worker';
 import pino from 'pino';
 import { io, Socket } from 'socket.io-client';
-import { SUPERBLOCKS_WORKER_ID } from './env';
 import { Interceptor, RateLimiter, Scheduler } from './interceptor';
 import logger from './logger';
 import { pluginGauge, socketRequestLatency, pluginDuration, executionLatency } from './metrics';
@@ -153,8 +151,7 @@ export class SocketIO implements Transport {
       };
       const traceTags: Record<string, string> = {
         ...commonTags,
-        ..._metadata.extraTraceTags,
-        [OBS_TAG_WORKER_ID]: SUPERBLOCKS_WORKER_ID
+        ..._metadata.extraTraceTags
       };
       const metricTags = toMetricLabels({
         ...commonTags,
@@ -182,7 +179,8 @@ export class SocketIO implements Transport {
               }
             }
 
-            executionLatency.observe(metricTags, Date.now() - _timings.invocation);
+            const now = Date.now();
+            executionLatency.observe(metricTags, now - _timings.invocation);
 
             const { resp, err } = await observe<{ resp?: Response; err?: Error }>(
               pluginDuration,

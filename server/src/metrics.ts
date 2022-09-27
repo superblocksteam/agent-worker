@@ -3,7 +3,7 @@ import { pluginMetricLabels } from '@superblocksteam/worker';
 import axios from 'axios';
 import promBundle from 'express-prom-bundle';
 import P from 'pino';
-import { Counter, Gauge, Registry, Summary } from 'prom-client';
+import { Counter, Gauge, Histogram, Registry } from 'prom-client';
 import * as si from 'systeminformation';
 import { SUPERBLOCKS_WORKER_VERSION as superblocks_worker_version, SUPERBLOCKS_AGENT_METRICS_DEFAULT } from './env';
 import { baseServerRequest } from './utils';
@@ -39,26 +39,26 @@ export const pluginGauge = new Gauge({
   registers: [registry]
 });
 
-export const executionLatency = new Summary({
+export const executionLatency = new Histogram({
   name: 'superblocks_controller_execution_latency_milliseconds',
   help: 'Latency from when the controller sends a request to when it is scheduled by the worker for execution.',
-  percentiles: [0.01, 0.5, 0.9, 0.95, 0.99, 1],
+  buckets: [12, 25, 50, 125, 250, 500, 750, 1000, 2000, 4000, 8000, 16000],
   labelNames: [...pluginMetricLabels],
   registers: [registry]
 });
 
-export const socketRequestLatency = new Summary({
+export const socketRequestLatency = new Histogram({
   name: 'superblocks_controller_socket_request_latency_milliseconds',
   help: 'Latency from when the controller sends a request to when the worker receives it.',
-  percentiles: [0.01, 0.5, 0.9, 0.95, 0.99, 1],
+  buckets: [1, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 1500, 2000],
   labelNames: pluginMetricLabels,
   registers: [registry]
 });
 
-export const pluginDuration = new Summary({
+export const pluginDuration = new Histogram({
   name: 'superblocks_controller_plugin_duration_milliseconds',
   help: 'Duration of plugin request.',
-  percentiles: [0.01, 0.5, 0.9, 0.95, 0.99, 1],
+  buckets: [50, 125, 250, 500, 750, 1000, 2000, 4000, 8000, 16000, 32000, 64000, 128000],
   labelNames: [...pluginMetricLabels],
   registers: [registry]
 });
