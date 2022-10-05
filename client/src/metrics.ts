@@ -4,6 +4,7 @@ import {
   OBS_TAG_PLUGIN_EVENT,
   OBS_TAG_ORG_ID,
   OBS_TAG_RESOURCE_TYPE,
+  OBS_TAG_EVENT_TYPE,
   toMetricLabels
 } from '@superblocksteam/shared';
 import { Counter, Registry, Histogram, Gauge } from 'prom-client';
@@ -14,6 +15,7 @@ export const pluginMetricLabels: string[] = toMetricLabels([
   OBS_TAG_PLUGIN_EVENT,
   OBS_TAG_ORG_ID,
   OBS_TAG_RESOURCE_TYPE,
+  OBS_TAG_EVENT_TYPE,
 
   // TODO(frank): deprecate after dashboards are updated with the above
   'org_id'

@@ -7,7 +7,8 @@ import {
   SUPERBLOCKS_CONTROLLER_KEY,
   SUPERBLOCKS_WORKER_EXECUTION_PYTHON_TIMEOUT_MS,
   SUPERBLOCKS_WORKER_EXECUTION_JS_TIMEOUT_MS,
-  SUPERBLOCKS_WORKER_EXECUTION_REST_API_TIMEOUT_MS
+  SUPERBLOCKS_WORKER_EXECUTION_REST_API_TIMEOUT_MS,
+  SUPERBLOCKS_WORKER_EXECUTION_REST_API_MAX_CONTENT_LENGTH_BYTES
 } from './env';
 import logger from './logger';
 import { Plugin } from './plugin';
@@ -47,6 +48,7 @@ export class Shim<T extends BasePlugin> implements Plugin {
       pythonExecutionTimeoutMs: SUPERBLOCKS_WORKER_EXECUTION_PYTHON_TIMEOUT_MS,
       javascriptExecutionTimeoutMs: SUPERBLOCKS_WORKER_EXECUTION_JS_TIMEOUT_MS,
       restApiExecutionTimeoutMs: SUPERBLOCKS_WORKER_EXECUTION_REST_API_TIMEOUT_MS,
+      restApiMaxContentLengthBytes: SUPERBLOCKS_WORKER_EXECUTION_REST_API_MAX_CONTENT_LENGTH_BYTES,
       workflowFetchAndExecuteFunc: null // Workflows are flattened by the controller.
     });
 
