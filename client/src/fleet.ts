@@ -1,28 +1,31 @@
 import { createServer } from 'http';
 import { createSecureServer, Http2Server } from 'http2';
-import { Tracer, SpanKind, SpanStatusCode, Span, context, propagation } from '@opentelemetry/api';
+import { context, propagation, Span, SpanKind, SpanStatusCode, Tracer } from '@opentelemetry/api';
 import {
   ActionConfiguration,
-  ExecutionOutput,
-  WorkerStatus,
+  Backoff,
   DatasourceConfiguration,
   DatasourceMetadataDto,
-  Backoff,
-  Retry,
+  ExecutionOutput,
+  OBS_TAG_ORG_ID,
+  OBS_TAG_PLUGIN_EVENT,
   OBS_TAG_PLUGIN_NAME,
   OBS_TAG_PLUGIN_VERSION,
-  OBS_TAG_PLUGIN_EVENT,
-  OBS_TAG_ORG_ID,
-  toMetricLabels
+  OBS_TAG_EVENT_TYPE,
+  Retry,
+  SemVer,
+  toMetricLabels,
+  WorkerStatus
 } from '@superblocksteam/shared';
-import { PluginProps } from '@superblocksteam/shared-backend';
+import { PluginProps, getTraceTagsFromActiveContext } from '@superblocksteam/shared-backend';
+import { isEmpty } from 'lodash';
 import P from 'pino';
 import { Registry } from 'prom-client';
-import { Socket, Server } from 'socket.io';
+import { Server, Socket } from 'socket.io';
 import { NoScheduleError } from './errors';
 import { library, Library } from './metrics';
 import { Auth } from './middleware';
-import { SortedArray, VersionedPluginDefinition, Request, Response, Event, TLSOptions, Metadata } from './utils';
+import { Event, Metadata, Request, Response, SortedArray, TLSOptions, VersionedPluginDefinition } from './utils';
 import { Worker } from './worker';
 
 export type Options = {
@@ -39,40 +42,93 @@ export type Options = {
   tracer: () => Tracer;
 };
 
-type Selector = {
+enum VPDCollation {
+  EQUAL = 'Equal',
+  EQUAL_OR_HIGHER = 'Equal or Higher'
+}
+
+export class Selector {
   vpd: VersionedPluginDefinition;
+  vpdCollation: VPDCollation;
   labels?: Record<string, string>;
-};
+
+  private constructor({
+    pluginName,
+    pluginVersion,
+    labels,
+    collation
+  }: {
+    pluginName: string;
+    pluginVersion: SemVer;
+    labels: Record<string, string> | undefined;
+    collation: VPDCollation;
+  }) {
+    this.vpd = {
+      name: pluginName,
+      version: pluginVersion
+    };
+    this.labels = labels;
+    this.vpdCollation = collation;
+  }
+
+  static Exact({
+    pluginName,
+    pluginVersion,
+    labels
+  }: {
+    pluginName: string;
+    pluginVersion: SemVer;
+    labels: Record<string, string> | undefined;
+  }): Selector {
+    return new Selector({ pluginName, pluginVersion, labels, collation: VPDCollation.EQUAL });
+  }
+
+  static ExactOrHigher({
+    pluginName,
+    pluginVersion,
+    labels
+  }: {
+    pluginName: string;
+    pluginVersion: SemVer;
+    labels: Record<string, string> | undefined;
+  }): Selector {
+    return new Selector({ pluginName, pluginVersion, labels, collation: VPDCollation.EQUAL_OR_HIGHER });
+  }
+}
 
 interface Client {
   info(): WorkerStatus[];
+
   ready(plugins?: string[]): boolean;
+
   metadata(
     selector: Selector,
     metadata: Metadata,
     dConfig: DatasourceConfiguration,
     aConfig?: ActionConfiguration
   ): Promise<DatasourceMetadataDto>;
+
   test(selector: Selector, metadata: Metadata, dConfig: DatasourceConfiguration): Promise<void>;
+
   execute(selector: Selector, metadata: Metadata, props: PluginProps): Promise<ExecutionOutput>;
+
   preDelete(selector: Selector, metadata: Metadata, dConfig: DatasourceConfiguration): Promise<void>;
 }
 
 export type AlgorithmFunc = (workers: SortedArray<Worker>) => Worker;
 
 export class Fleet implements Client {
+  private static _instance: Client;
   private _metrics: Library;
   private _workers: SortedArray<Worker>;
   private _server: Server;
   private _logger: P.Logger;
   private _options: Options;
   private _httpServer: Http2Server;
-  private static _instance: Client;
+  private pick;
 
   private constructor(logger: P.Logger, options: Options) {
-    this._workers = new SortedArray<Worker>((w1: Worker, w2: Worker): number => {
-      return w1.id() < w2.id() ? -1 : 1;
-    });
+    this._workers = new SortedArray<Worker>(Worker.IdComparator);
 
     this._metrics = library(options.promRegistry);
 
@@ -106,6 +162,18 @@ export class Fleet implements Client {
     });
   }
 
+  // Singleton implementation
+  public static instance(logger?: P.Logger, options?: Options): Client {
+    if (!Fleet._instance) {
+      if (logger && options) {
+        Fleet._instance = new Fleet(logger, options);
+      } else {
+        throw new TypeError("Can't construct a new fleet instance without logger and connection options");
+      }
+    }
+    return Fleet._instance;
+  }
+
   public info(): WorkerStatus[] {
     return this._workers
       .map<WorkerStatus>((worker: Worker): WorkerStatus => worker.info())
@@ -137,16 +205,47 @@ export class Fleet implements Client {
     return true;
   }
 
-  // Singleton implementation
-  public static instance(logger?: P.Logger, options?: Options): Client {
-    if (!Fleet._instance) {
-      if (logger && options) {
-        Fleet._instance = new Fleet(logger, options);
-      } else {
-        throw new TypeError("Can't construct a new fleet instance without logger and connection options");
-      }
-    }
-    return Fleet._instance;
+  public deregister(workerId: string): void {
+    // TODO(frank): This is not efficient;
+    this._workers = this._workers.filter((w) => w.id() != workerId);
+    this._logger.info(
+      {
+        worker: workerId
+      },
+      'removed from fleet'
+    );
+    this._metrics.workerGauge.dec();
+  }
+
+  public async execute(selector: Selector, metadata: Metadata, pluginProps: PluginProps): Promise<ExecutionOutput> {
+    return (await this._execute(Event.EXECUTE, selector, metadata, { pluginProps }))?.executionOutput ?? new ExecutionOutput();
+  }
+
+  public async metadata(
+    selector: Selector,
+    metadata: Metadata,
+    datasourceConfiguration: DatasourceConfiguration,
+    actionConfiguration?: ActionConfiguration
+  ): Promise<DatasourceMetadataDto> {
+    return (
+      (
+        await this._execute(Event.METADATA, selector, metadata, {
+          datasourceConfiguration,
+          actionConfiguration
+        })
+      )?.datasourceMetadataDto ?? {}
+    );
+  }
+
+  public async test(selector: Selector, metadata: Metadata, datasourceConfiguration: DatasourceConfiguration): Promise<void> {
+    await this._execute(Event.TEST, selector, metadata, { datasourceConfiguration });
+  }
+
+  // TODO(frank): I don't like how i'm switching back and forth between
+  //              failing fast and succeeding fast. Suseptible to bugs in
+
+  public async preDelete(selector: Selector, metadata: Metadata, datasourceConfiguration: DatasourceConfiguration): Promise<void> {
+    await this._execute(Event.PRE_DELETE, selector, metadata, { datasourceConfiguration });
   }
 
   private middleware(): void {
@@ -185,29 +284,28 @@ export class Fleet implements Client {
     this._metrics.workerGauge.inc();
   }
 
-  public deregister(workerId: string): void {
-    // TODO(frank): This is not efficient;
-    this._workers = this._workers.filter((w) => w.id() != workerId);
-    this._logger.info(
-      {
-        worker: workerId
-      },
-      'removed from fleet'
-    );
-    this._metrics.workerGauge.dec();
+  private stringifyVPD(vpd: VersionedPluginDefinition): string {
+    return vpd.version ? `${vpd.name}@${vpd.version}` : vpd.name;
   }
 
-  // TODO(frank): I don't like how i'm switching back and forth between
-  //              failing fast and succeeding fast. Suseptible to bugs in
   //              condition ordering.
   private filter(selector: Selector): SortedArray<Worker> {
-    const plugin = selector.vpd.version ? `${selector.vpd.name}@${selector.vpd.version}` : selector.vpd.name;
+    const plugin = this.stringifyVPD(selector.vpd);
 
     // We're treating `isCordoned` as a non-configurable filter.
     // We'd change this if we want to return cordoned Workers.
     return this._workers.filter((w: Worker): boolean => {
-      if (!w.supports(plugin)) {
-        return false;
+      switch (selector.vpdCollation) {
+        case VPDCollation.EQUAL:
+          if (!w.supports(plugin)) {
+            return false;
+          }
+          break;
+        case VPDCollation.EQUAL_OR_HIGHER:
+          if (!w.supportsHigher(selector.vpd)) {
+            return false;
+          }
+          break;
       }
 
       if (w.isCordoned()) {
@@ -226,43 +324,73 @@ export class Fleet implements Client {
     });
   }
 
-  private schedule(selector: Selector, algorithm: AlgorithmFunc): Worker {
-    const available = this.filter(selector);
+  private executionVPD(worker: Worker, selectors: Selector[]): VersionedPluginDefinition {
+    for (const selector of selectors) {
+      const vpdString = this.stringifyVPD(selector.vpd);
+      switch (selector.vpdCollation) {
+        case VPDCollation.EQUAL: {
+          if (worker.supports(vpdString)) {
+            return selector.vpd;
+          }
+          break;
+        }
+        case VPDCollation.EQUAL_OR_HIGHER: {
+          const one = worker.supportsHigher(selector.vpd);
+          if (one) {
+            return one;
+          }
+          break;
+        }
+      }
+    }
+    throw new Error('No VPD can be selected on the given workers.');
+  }
+
+  /**
+   * Apply the selectors sequentially if the previous one doesn't qualify any workers.
+   * @param selectors Selectors to be applied sequentially
+   * @param algorithm The algorithm to choose one of the qualified workers
+   * @private
+   */
+  private schedule(
+    selectors: Selector[],
+    algorithm: AlgorithmFunc
+  ): { worker: Worker; executionVPD: VersionedPluginDefinition; numOfAvailableWorkers: number } {
+    let available: SortedArray<Worker> = new SortedArray<Worker>(Worker.IdComparator);
+    if (isEmpty(selectors)) {
+      throw new Error("No selector provided. This shouldn't happen.");
+    } else {
+      for (let i = 0, selector = selectors[0]; i < selectors.length && !available.size(); selector = selectors[++i]) {
+        if ((available = this.filter(selector)).size()) {
+          this._logger.info(
+            {
+              selector,
+              worker: this._workers.map((w) => w.id())
+            },
+            `qualifying workers by vpd collation '${selector.vpdCollation}'`
+          );
+        }
+      }
+    }
 
     if (available.size() == 0) {
       const err = new Error(`There are no workers in the fleet that can execute this step.`);
-      this._logger.error({ selector }, err.message);
+      this._logger.error({ selectors }, err.message);
       throw err;
     }
 
     const selected = algorithm(available);
-    this._logger.info({ selector, worker: selected.id() }, 'worker selected');
+    const executionVPD = this.executionVPD(selected, selectors);
 
-    return selected;
-  }
-
-  public async execute(selector: Selector, metadata: Metadata, pluginProps: PluginProps): Promise<ExecutionOutput> {
-    return (await this._execute(Event.EXECUTE, selector, metadata, { pluginProps }))?.executionOutput ?? new ExecutionOutput();
-  }
-
-  public async metadata(
-    selector: Selector,
-    metadata: Metadata,
-    datasourceConfiguration: DatasourceConfiguration,
-    actionConfiguration?: ActionConfiguration
-  ): Promise<DatasourceMetadataDto> {
-    return (
-      (await this._execute(Event.METADATA, selector, metadata, { datasourceConfiguration, actionConfiguration }))?.datasourceMetadataDto ??
-      {}
+    this._logger.info(
+      {
+        worker: selected.id(),
+        algorithm
+      },
+      `worker selected by algorithm.`
     );
-  }
 
-  public async test(selector: Selector, metadata: Metadata, datasourceConfiguration: DatasourceConfiguration): Promise<void> {
-    await this._execute(Event.TEST, selector, metadata, { datasourceConfiguration });
-  }
-
-  public async preDelete(selector: Selector, metadata: Metadata, datasourceConfiguration: DatasourceConfiguration): Promise<void> {
-    await this._execute(Event.PRE_DELETE, selector, metadata, { datasourceConfiguration });
+    return { worker: selected, executionVPD: executionVPD, numOfAvailableWorkers: available.size() };
   }
 
   private async _execute(event: Event, selector: Selector, metadata: Metadata, request: Request): Promise<Response> {
@@ -288,98 +416,112 @@ export class Fleet implements Client {
     const spanOptions = {
       attributes: {
         ...traceTags,
-        ...metadata.extraTraceTags
+        ...getTraceTagsFromActiveContext()
       },
       kind: SpanKind.SERVER
     };
 
-    const baggageEntries = {};
-    Object.entries(spanOptions.attributes).forEach((value) => {
-      baggageEntries[value[0]] = { value: value[1] as string };
-    });
+    return await this._options
+      .tracer()
+      .startActiveSpan(`${event.toUpperCase()} ${plugin}`, spanOptions, async (span: Span): Promise<Response> => {
+        try {
+          // This is needed to provide a random starting point every time.
+          // If we did not have this, we always try the same worker first.
+          // Edge cases would then exists for a non-concurrency-constrained
+          // worker fleet would only every use one worker.
+          const offset: number = Math.floor(Math.random() * 1000);
 
-    return context.with(
-      propagation.setBaggage(context.active(), propagation.createBaggage(baggageEntries)),
-      async (): Promise<Response> => {
-        return await this._options
-          .tracer()
-          .startActiveSpan(`${event.toUpperCase()} ${plugin}`, spanOptions, async (span: Span): Promise<Response> => {
-            try {
-              // This is needed to provide a random starting point every time.
-              // If we did not have this, we always try the same worker first.
-              // Edge cases would then exists for a non-concurrency-constrained
-              // worker fleet would only every use one worker.
-              const offset: number = Math.floor(Math.random() * 1000);
+          const response: Response = await new Retry<Response>({
+            backoff: this._options.backoff,
+            logger: this._logger.child({ plugin }),
+            doEvery: (): void => this._metrics.retriesTotal?.inc(metricsTags),
+            doOnce: (): void => this._metrics.retriesDistinctTotal?.inc(metricsTags),
+            tracer: this._options.tracer(),
+            spanName: `SCHEDULE ${plugin}`,
+            spanOptions: spanOptions,
+            func: async (attempt: number): Promise<Response> => {
+              let selected: Worker;
+              let executionVPD: VersionedPluginDefinition;
 
-              const response: Response = await new Retry<Response>({
-                backoff: this._options.backoff,
-                logger: this._logger.child({ plugin }),
-                doEvery: (): void => this._metrics.retriesTotal?.inc(metricsTags),
-                doOnce: (): void => this._metrics.retriesDistinctTotal?.inc(metricsTags),
-                tracer: this._options.tracer(),
-                spanName: `SCHEDULE ${plugin}`,
-                spanOptions: spanOptions,
-                func: async (attempt: number): Promise<Response> => {
-                  let selected: Worker;
+              try {
+                // This selector ensures plugin will execute on the newest worker if none of the quorum supports it
+                const secondarySelector: Selector = Selector.ExactOrHigher({
+                  pluginName: selector.vpd.name,
+                  pluginVersion: selector.vpd.version,
+                  labels: selector.labels
+                });
+                const selectors = [selector, secondarySelector];
+                const schedule = this.schedule(
+                  selectors,
+                  (workers: SortedArray<Worker>): Worker => workers.get((attempt++ + offset) % workers.size()) as Worker
+                );
+                selected = schedule.worker;
+                executionVPD = schedule.executionVPD;
 
-                  try {
-                    selected = this.schedule(
-                      selector,
-                      (workers: SortedArray<Worker>): Worker => workers.get((attempt++ + offset) % workers.size()) as Worker
-                    );
-
-                    this._metrics.scheduleTotal?.inc({
-                      ...metricsTags,
-                      result: 'succeeded'
-                    });
-                  } catch (err) {
-                    this._metrics.scheduleTotal?.inc({
-                      ...metricsTags,
-                      result: 'failed'
-                    });
-                    throw err;
-                  }
-
-                  try {
-                    // QUESTION(frank): is there a more typescript-ish defaulting way to do this
-                    if (!metadata.carrier) {
-                      metadata.carrier = {};
-                    }
-
-                    propagation.inject(context.active(), metadata.carrier);
-
-                    return await selected.execute(event, metadata, selector.vpd, request, {
-                      invocation
-                    });
-                  } catch (err) {
-                    if (err instanceof NoScheduleError) {
-                      selected.cordon();
-                    }
-                    throw err;
-                  }
+                // This isn't the most accurate measure as we may miss a
+                // few metrics due to worker scaling, but overall
+                // should be a good signal to scale on.
+                if (attempt % schedule.numOfAvailableWorkers == 0) {
+                  this._metrics.allAvailableWorkersBusy?.inc(
+                    toMetricLabels({
+                      [OBS_TAG_EVENT_TYPE]: metadata.extraMetricTags?.[OBS_TAG_EVENT_TYPE] || '',
+                      [OBS_TAG_PLUGIN_NAME]: selector.vpd.name,
+                      [OBS_TAG_PLUGIN_VERSION]: selector.vpd.version,
+                      [OBS_TAG_PLUGIN_EVENT]: event as string
+                    }) as Record<string, string | number>
+                  );
                 }
-              }).do();
-              span.setStatus({ code: SpanStatusCode.OK });
 
-              this._metrics.requestsTotal?.inc({
-                ...metricsTags,
-                result: 'succeeded'
-              });
-              return response;
-            } catch (err) {
-              span.setStatus({ code: SpanStatusCode.ERROR });
-              span.recordException(err);
+                this._metrics.scheduleTotal?.inc({
+                  ...metricsTags,
+                  result: 'succeeded'
+                });
+              } catch (err) {
+                this._metrics.scheduleTotal?.inc({
+                  ...metricsTags,
+                  result: 'failed'
+                });
+                throw err;
+              }
 
-              this._metrics.requestsTotal?.inc({
-                ...metricsTags,
-                result: 'failed'
-              });
-              throw err;
-            } finally {
-              span.end();
+              try {
+                // QUESTION(frank): is there a more typescript-ish defaulting way to do this
+                if (!metadata.carrier) {
+                  metadata.carrier = {};
+                }
+
+                propagation.inject(context.active(), metadata.carrier);
+
+                return await selected.execute(event, metadata, executionVPD, request, {
+                  invocation
+                });
+              } catch (err) {
+                if (err instanceof NoScheduleError) {
+                  selected.cordon();
+                }
+                throw err;
+              }
             }
+          }).do();
+          span.setStatus({ code: SpanStatusCode.OK });
+
+          this._metrics.requestsTotal?.inc({
+            ...metricsTags,
+            result: 'succeeded'
           });
-      }
-    );
+          return response;
+        } catch (err) {
+          span.setStatus({ code: SpanStatusCode.ERROR });
+          span.recordException(err);
+
+          this._metrics.requestsTotal?.inc({
+            ...metricsTags,
+            result: 'failed'
+          });
+          throw err;
+        } finally {
+          span.end();
+        }
+      });
   }
 }

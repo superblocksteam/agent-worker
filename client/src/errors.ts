@@ -39,9 +39,18 @@ export function unmarshal(err?: ErrorEncoding): Error {
     return new Error();
   }
 
-  const msg = err.message;
+  // NOTE(frank): Very interesting. It would seem socket.io only does an
+  //              implicit JSON.parse when a Javascript client is used.
+  //              I thought it was done serverside so a little confused as
+  //              to why since the client can also be Python, we might need
+  //              to do an explicit JSON.parse.
+  if (typeof err === 'string' || err instanceof String) {
+    err = JSON.parse(err as unknown as string);
+  }
 
-  switch (err.name) {
+  const msg: string = err?.message || '';
+
+  switch (err?.name) {
     case IntegrationError.name:
       return new IntegrationError(msg);
     case BusyError.name:

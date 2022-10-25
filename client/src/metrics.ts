@@ -25,6 +25,7 @@ export type Library = {
   scheduleTotal: Counter;
   retriesTotal: Counter;
   requestsTotal: Counter;
+  allAvailableWorkersBusy: Counter;
   retriesDistinctTotal: Counter;
   socketResponseLatency: Histogram;
   workerGauge: Gauge;
@@ -59,6 +60,13 @@ export const library = (registry: Registry): Library => {
     registers: [registry]
   });
 
+  const allAvailableWorkersBusy = new Counter({
+    name: 'superblocks_controller_fleet_all_available_workers_busy_total',
+    help: 'Count of number of times a job was retried against the entire available worker fleet but still could not schedule.',
+    labelNames: toMetricLabels([OBS_TAG_PLUGIN_NAME, OBS_TAG_PLUGIN_VERSION, OBS_TAG_PLUGIN_EVENT, OBS_TAG_EVENT_TYPE]) as string[],
+    registers: [registry]
+  });
+
   const socketResponseLatency = new Histogram({
     name: 'superblocks_controller_socket_response_latency_milliseconds',
     help: 'Latency from when the worker sends a response to when the controller receives it.',
@@ -77,6 +85,7 @@ export const library = (registry: Registry): Library => {
     scheduleTotal,
     retriesTotal,
     retriesDistinctTotal,
+    allAvailableWorkersBusy,
     socketResponseLatency,
     workerGauge,
     requestsTotal

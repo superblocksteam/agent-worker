@@ -7,7 +7,7 @@ import {
   OBS_TAG_PLUGIN_EVENT,
   toMetricLabels
 } from '@superblocksteam/shared';
-import { Closer, observe } from '@superblocksteam/shared-backend';
+import { Closer, observe, getTraceTagsFromContext } from '@superblocksteam/shared-backend';
 import {
   VersionedPluginDefinition,
   Event,
@@ -149,10 +149,14 @@ export class SocketIO implements Transport {
         [OBS_TAG_PLUGIN_VERSION]: plugin.version(),
         [OBS_TAG_PLUGIN_EVENT]: _event as string
       };
+
+      const propagatedContext = propagation.extract(ROOT_CONTEXT, _metadata.carrier);
+
       const traceTags: Record<string, string> = {
         ...commonTags,
-        ..._metadata.extraTraceTags
+        ...getTraceTagsFromContext(propagatedContext)
       };
+
       const metricTags = toMetricLabels({
         ...commonTags,
         ..._metadata.extraMetricTags,
@@ -169,7 +173,7 @@ export class SocketIO implements Transport {
           attributes: traceTags,
           kind: SpanKind.SERVER
         },
-        propagation.extract(ROOT_CONTEXT, _metadata.carrier),
+        propagatedContext,
         async (span: Span): Promise<{ resp?: Response; err?: Error }> => {
           try {
             for (const interceptor of this._interceptors) {

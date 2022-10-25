@@ -1,29 +1,29 @@
 import { readFileSync } from 'fs';
 import { MaybeError } from '@superblocksteam/shared';
-import { Closer, shutdownHandlers, HttpServer } from '@superblocksteam/shared-backend';
-import { VersionedPluginDefinition, TLSOptions } from '@superblocksteam/worker';
+import { Closer, HttpServer, shutdownHandlers } from '@superblocksteam/shared-backend';
+import { TLSOptions, VersionedPluginDefinition } from '@superblocksteam/worker';
 import { ControllerFleet } from './controller';
 import dependencies from './dependencies';
 import {
-  SUPERBLOCKS_WORKER_TLS_KEY_FILE,
-  SUPERBLOCKS_WORKER_TLS_CERT_FILE,
-  SUPERBLOCKS_WORKER_TLS_CA_FILE,
-  SUPERBLOCKS_WORKER_TLS_INSECURE,
-  SUPERBLOCKS_WORKER_VALIDATE_SERVER_NAME as validateServer,
-  SUPERBLOCKS_WORKER_PLUGINS,
-  SUPERBLOCKS_WORKER_CONCURRENCY as concurrency,
-  SUPERBLOCKS_WORKER_LABELS as labels,
+  SUPERBLOCKS_AGENT_METRICS_FORWARD,
   SUPERBLOCKS_CONTROLLER_KEY as key,
+  SUPERBLOCKS_WORKER_CONCURRENCY as concurrency,
   SUPERBLOCKS_WORKER_ID as id,
+  SUPERBLOCKS_WORKER_LABELS as labels,
   SUPERBLOCKS_WORKER_METRICS_PORT as port,
-  SUPERBLOCKS_AGENT_METRICS_FORWARD
+  SUPERBLOCKS_WORKER_PLUGINS,
+  SUPERBLOCKS_WORKER_TLS_CA_FILE,
+  SUPERBLOCKS_WORKER_TLS_CERT_FILE,
+  SUPERBLOCKS_WORKER_TLS_INSECURE,
+  SUPERBLOCKS_WORKER_TLS_KEY_FILE,
+  SUPERBLOCKS_WORKER_VALIDATE_SERVER_NAME as validateServer
 } from './env';
 import logger from './logger';
 import { handler, healthcheck } from './metrics';
 import { load } from './plugin';
 import { Scheduler } from './scheduler';
 import tracer from './tracer';
-import { register, deregister } from './utils';
+import { deregister, register } from './utils';
 
 let vpds: VersionedPluginDefinition[];
 
@@ -70,6 +70,11 @@ try {
     logger: logger.child({ who: 'controller fleet' })
   });
 
+  process.on('uncaughtException', (err, next) => {
+    logger.error(`Uncaught error found. ${err}\n${err.stack}`);
+    return;
+  });
+
   shutdownHandlers(
     [
       'SIGINT', // CTRL^C
@@ -79,6 +84,11 @@ try {
     ...[
       controllers,
       new HttpServer({ port, handlers: [handler] }),
+      {
+        close: async (reason?: string): Promise<MaybeError> => {
+          logger.info(`Shutting down the worker: ${reason}.`);
+        }
+      },
       {
         close: async (reason?: string): Promise<MaybeError> => {
           try {
