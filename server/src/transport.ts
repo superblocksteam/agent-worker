@@ -1,3 +1,4 @@
+import { existsSync, writeFileSync } from 'fs';
 import { SpanKind, Span, propagation, ROOT_CONTEXT } from '@opentelemetry/api';
 import {
   Retry,
@@ -21,6 +22,7 @@ import {
 } from '@superblocksteam/worker';
 import pino from 'pino';
 import { io, Socket } from 'socket.io-client';
+import { SUPERBLOCKS_WORKER_HEALTHY_PATH } from './env';
 import { Interceptor, RateLimiter, Scheduler } from './interceptor';
 import logger from './logger';
 import { pluginGauge, socketRequestLatency, pluginDuration, executionLatency } from './metrics';
@@ -239,10 +241,22 @@ export class SocketIO implements Transport {
     this._socket.on('disconnect', this.onDisconnect);
   }
 
+  private claimHealthy(): void {
+    try {
+      if (!existsSync(SUPERBLOCKS_WORKER_HEALTHY_PATH)) {
+        writeFileSync(SUPERBLOCKS_WORKER_HEALTHY_PATH, 'OK');
+      }
+    } catch (err) {
+      this._logger.error({ err }, 'error writing health file');
+      process.exit(1);
+    }
+  }
+
   private onConnect = (): void => {
     this.broadcast();
     this._logger = this._logger.child({ socket_id: this._socket.id });
     this._logger.info({ event: 'connect' }, 'connected');
+    this.claimHealthy();
   };
 
   private onConnectError = (err: Error): void => {

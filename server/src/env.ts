@@ -2,7 +2,7 @@ import { EnvStore } from '@superblocksteam/shared';
 import dotenv from 'dotenv';
 import { v4 as uuidv4 } from 'uuid';
 import { PluginRequest, unmarshalPluginRequest } from './plugin';
-import { unmarshalLabels } from './utils';
+import { parseConnectionCacheTTLs, unmarshalLabels } from './utils';
 
 dotenv.config();
 
@@ -111,8 +111,30 @@ envs.addAll([
     defaultValue: '50000000'
   },
   {
+    name: 'SUPERBLOCKS_CONNECTION_CACHE_MAX_CONCURRENT_CONNECTIONS',
+    defaultValue: '1000'
+  },
+  {
+    name: 'SUPERBLOCKS_CONNECTION_CACHE_MAX_CONNECTIONS_PER_DATASOURCE',
+    defaultValue: '5'
+  },
+  {
+    name: 'SUPERBLOCKS_CONNECTION_CACHE_TTL_MS_DEFAULT',
+    defaultValue: '60000'
+  },
+  // a comma delimited list assigning a value to a plugin name, e.g.
+  // postgres=120000,mariadb=45000,snowflake=90000
+  {
+    name: 'SUPERBLOCKS_CONNECTION_CACHE_TTL_MS_PLUGINS',
+    defaultValue: ''
+  },
+  {
     name: 'SUPERBLOCKS_AGENT_ENVIRONMENT',
     defaultValue: '*'
+  },
+  {
+    name: 'SUPERBLOCKS_WORKER_HEALTHY_PATH',
+    defaultValue: '/tmp/worker_healthy'
   }
 ]);
 
@@ -158,6 +180,17 @@ export const SUPERBLOCKS_WORKER_EXECUTION_REST_API_TIMEOUT_MS = Number(envs.get(
 export const SUPERBLOCKS_WORKER_EXECUTION_REST_API_MAX_CONTENT_LENGTH_BYTES = envs.get(
   'SUPERBLOCKS_WORKER_EXECUTION_REST_API_MAX_CONTENT_LENGTH_BYTES'
 );
+export const SUPERBLOCKS_CONNECTION_CACHE_MAX_CONCURRENT_CONNECTIONS = Number(
+  envs.get('SUPERBLOCKS_CONNECTION_CACHE_MAX_CONCURRENT_CONNECTIONS')
+);
+export const SUPERBLOCKS_CONNECTION_CACHE_MAX_CONNECTIONS_PER_DATASOURCE = Number(
+  envs.get('SUPERBLOCKS_CONNECTION_CACHE_MAX_CONNECTIONS_PER_DATASOURCE')
+);
+export const SUPERBLOCKS_CONNECTION_CACHE_TTL_MS_DEFAULT = Number(envs.get('SUPERBLOCKS_CONNECTION_CACHE_TTL_MS_DEFAULT'));
+export const SUPERBLOCKS_CONNECTION_CACHE_TTL_MS_PLUGINS: Record<string, number> = parseConnectionCacheTTLs(
+  envs.get('SUPERBLOCKS_CONNECTION_CACHE_TTL_MS_PLUGINS')
+);
 export const SUPERBLOCKS_AGENT_DOMAIN: string = envs.get('__SUPERBLOCKS_AGENT_DOMAIN');
+export const SUPERBLOCKS_WORKER_HEALTHY_PATH: string = envs.get('SUPERBLOCKS_WORKER_HEALTHY_PATH');
 
 export default envs;

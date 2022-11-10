@@ -17,7 +17,7 @@ import {
   toMetricLabels,
   WorkerStatus
 } from '@superblocksteam/shared';
-import { PluginProps, getTraceTagsFromActiveContext } from '@superblocksteam/shared-backend';
+import { PluginProps, getTraceTagsFromActiveContext, getBaggageFromObject } from '@superblocksteam/shared-backend';
 import { isEmpty } from 'lodash';
 import P from 'pino';
 import { Registry } from 'prom-client';
@@ -400,7 +400,8 @@ export class Fleet implements Client {
       [OBS_TAG_PLUGIN_NAME]: selector.vpd.name,
       [OBS_TAG_PLUGIN_VERSION]: selector.vpd.version,
       [OBS_TAG_PLUGIN_EVENT]: event as string,
-      [OBS_TAG_ORG_ID]: metadata.orgID as string
+      [OBS_TAG_ORG_ID]: metadata.orgID as string,
+      ...getTraceTagsFromActiveContext()
     };
     const metricsTags = toMetricLabels({
       ...metadata.extraMetricTags,
@@ -414,114 +415,116 @@ export class Fleet implements Client {
     }) as Record<string, string | number>;
 
     const spanOptions = {
-      attributes: {
-        ...traceTags,
-        ...getTraceTagsFromActiveContext()
-      },
+      attributes: traceTags,
       kind: SpanKind.SERVER
     };
 
-    return await this._options
-      .tracer()
-      .startActiveSpan(`${event.toUpperCase()} ${plugin}`, spanOptions, async (span: Span): Promise<Response> => {
-        try {
-          // This is needed to provide a random starting point every time.
-          // If we did not have this, we always try the same worker first.
-          // Edge cases would then exists for a non-concurrency-constrained
-          // worker fleet would only every use one worker.
-          const offset: number = Math.floor(Math.random() * 1000);
+    return await context.with(
+      propagation.setBaggage(context.active(), propagation.createBaggage(getBaggageFromObject(traceTags))),
+      async () => {
+        return await this._options
+          .tracer()
+          .startActiveSpan(`${event.toUpperCase()} ${plugin}`, spanOptions, async (span: Span): Promise<Response> => {
+            try {
+              // This is needed to provide a random starting point every time.
+              // If we did not have this, we always try the same worker first.
+              // Edge cases would then exists for a non-concurrency-constrained
+              // worker fleet would only every use one worker.
+              const offset: number = Math.floor(Math.random() * 1000);
 
-          const response: Response = await new Retry<Response>({
-            backoff: this._options.backoff,
-            logger: this._logger.child({ plugin }),
-            doEvery: (): void => this._metrics.retriesTotal?.inc(metricsTags),
-            doOnce: (): void => this._metrics.retriesDistinctTotal?.inc(metricsTags),
-            tracer: this._options.tracer(),
-            spanName: `SCHEDULE ${plugin}`,
-            spanOptions: spanOptions,
-            func: async (attempt: number): Promise<Response> => {
-              let selected: Worker;
-              let executionVPD: VersionedPluginDefinition;
+              const response: Response = await new Retry<Response>({
+                backoff: this._options.backoff,
+                logger: this._logger.child({ plugin }),
+                doEvery: (): void => this._metrics.retriesTotal?.inc(metricsTags),
+                doOnce: (): void => this._metrics.retriesDistinctTotal?.inc(metricsTags),
+                tracer: this._options.tracer(),
+                spanName: `SCHEDULE ${plugin}`,
+                spanOptions: spanOptions,
+                func: async (attempt: number): Promise<Response> => {
+                  let selected: Worker;
+                  let executionVPD: VersionedPluginDefinition;
 
-              try {
-                // This selector ensures plugin will execute on the newest worker if none of the quorum supports it
-                const secondarySelector: Selector = Selector.ExactOrHigher({
-                  pluginName: selector.vpd.name,
-                  pluginVersion: selector.vpd.version,
-                  labels: selector.labels
-                });
-                const selectors = [selector, secondarySelector];
-                const schedule = this.schedule(
-                  selectors,
-                  (workers: SortedArray<Worker>): Worker => workers.get((attempt++ + offset) % workers.size()) as Worker
-                );
-                selected = schedule.worker;
-                executionVPD = schedule.executionVPD;
+                  try {
+                    // This selector ensures plugin will execute on the newest worker if none of the quorum supports it
+                    const secondarySelector: Selector = Selector.ExactOrHigher({
+                      pluginName: selector.vpd.name,
+                      pluginVersion: selector.vpd.version,
+                      labels: selector.labels
+                    });
+                    const selectors = [selector, secondarySelector];
+                    const schedule = this.schedule(
+                      selectors,
+                      (workers: SortedArray<Worker>): Worker => workers.get((attempt++ + offset) % workers.size()) as Worker
+                    );
+                    selected = schedule.worker;
+                    executionVPD = schedule.executionVPD;
 
-                // This isn't the most accurate measure as we may miss a
-                // few metrics due to worker scaling, but overall
-                // should be a good signal to scale on.
-                if (attempt % schedule.numOfAvailableWorkers == 0) {
-                  this._metrics.allAvailableWorkersBusy?.inc(
-                    toMetricLabels({
-                      [OBS_TAG_EVENT_TYPE]: metadata.extraMetricTags?.[OBS_TAG_EVENT_TYPE] || '',
-                      [OBS_TAG_PLUGIN_NAME]: selector.vpd.name,
-                      [OBS_TAG_PLUGIN_VERSION]: selector.vpd.version,
-                      [OBS_TAG_PLUGIN_EVENT]: event as string
-                    }) as Record<string, string | number>
-                  );
+                    // This isn't the most accurate measure as we may miss a
+                    // few metrics due to worker scaling, but overall
+                    // should be a good signal to scale on.
+                    if (attempt % schedule.numOfAvailableWorkers == 0) {
+                      this._metrics.allAvailableWorkersBusy?.inc(
+                        toMetricLabels({
+                          [OBS_TAG_EVENT_TYPE]: metadata.extraMetricTags?.[OBS_TAG_EVENT_TYPE] || '',
+                          [OBS_TAG_PLUGIN_NAME]: selector.vpd.name,
+                          [OBS_TAG_PLUGIN_VERSION]: selector.vpd.version,
+                          [OBS_TAG_PLUGIN_EVENT]: event as string
+                        }) as Record<string, string | number>
+                      );
+                    }
+
+                    this._metrics.scheduleTotal?.inc({
+                      ...metricsTags,
+                      result: 'succeeded'
+                    });
+                  } catch (err) {
+                    this._metrics.scheduleTotal?.inc({
+                      ...metricsTags,
+                      result: 'failed'
+                    });
+                    throw err;
+                  }
+
+                  try {
+                    // QUESTION(frank): is there a more typescript-ish defaulting way to do this
+                    if (!metadata.carrier) {
+                      metadata.carrier = {};
+                    }
+
+                    propagation.inject(context.active(), metadata.carrier);
+
+                    return await selected.execute(event, metadata, executionVPD, request, {
+                      invocation
+                    });
+                  } catch (err) {
+                    if (err instanceof NoScheduleError) {
+                      selected.cordon();
+                    }
+                    throw err;
+                  }
                 }
+              }).do();
+              span.setStatus({ code: SpanStatusCode.OK });
 
-                this._metrics.scheduleTotal?.inc({
-                  ...metricsTags,
-                  result: 'succeeded'
-                });
-              } catch (err) {
-                this._metrics.scheduleTotal?.inc({
-                  ...metricsTags,
-                  result: 'failed'
-                });
-                throw err;
-              }
+              this._metrics.requestsTotal?.inc({
+                ...metricsTags,
+                result: 'succeeded'
+              });
+              return response;
+            } catch (err) {
+              span.setStatus({ code: SpanStatusCode.ERROR });
+              span.recordException(err);
 
-              try {
-                // QUESTION(frank): is there a more typescript-ish defaulting way to do this
-                if (!metadata.carrier) {
-                  metadata.carrier = {};
-                }
-
-                propagation.inject(context.active(), metadata.carrier);
-
-                return await selected.execute(event, metadata, executionVPD, request, {
-                  invocation
-                });
-              } catch (err) {
-                if (err instanceof NoScheduleError) {
-                  selected.cordon();
-                }
-                throw err;
-              }
+              this._metrics.requestsTotal?.inc({
+                ...metricsTags,
+                result: 'failed'
+              });
+              throw err;
+            } finally {
+              span.end();
             }
-          }).do();
-          span.setStatus({ code: SpanStatusCode.OK });
-
-          this._metrics.requestsTotal?.inc({
-            ...metricsTags,
-            result: 'succeeded'
           });
-          return response;
-        } catch (err) {
-          span.setStatus({ code: SpanStatusCode.ERROR });
-          span.recordException(err);
-
-          this._metrics.requestsTotal?.inc({
-            ...metricsTags,
-            result: 'failed'
-          });
-          throw err;
-        } finally {
-          span.end();
-        }
-      });
+      }
+    );
   }
 }

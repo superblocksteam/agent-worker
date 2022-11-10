@@ -6,6 +6,7 @@ import sb_dynamodb_0_0_7 from 'sb-dynamodb-0.0.7';
 import sb_email_0_0_7 from 'sb-email-0.0.7';
 import sb_graphql_0_0_8 from 'sb-graphql-0.0.8';
 import sb_gsheets_0_0_15 from 'sb-gsheets-0.0.15';
+import sb_gsheets_0_0_16 from 'sb-gsheets-0.0.16';
 import sb_javascript_0_0_9 from 'sb-javascript-0.0.9';
 import sb_mariadb_0_0_7 from 'sb-mariadb-0.0.7';
 import sb_mongodb_0_0_6 from 'sb-mongodb-0.0.6';
@@ -27,6 +28,7 @@ const dependencies: Record<string, BasePlugin | unknown> = {
   'sb-email-0.0.7': new sb_email_0_0_7(),
   'sb-graphql-0.0.8': new sb_graphql_0_0_8(),
   'sb-gsheets-0.0.15': new sb_gsheets_0_0_15(),
+  'sb-gsheets-0.0.16': new sb_gsheets_0_0_16(),
   'sb-javascript-0.0.9': new sb_javascript_0_0_9(),
   'sb-mariadb-0.0.7': new sb_mariadb_0_0_7(),
   'sb-mongodb-0.0.6': new sb_mongodb_0_0_6(),

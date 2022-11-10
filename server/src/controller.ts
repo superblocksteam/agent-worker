@@ -1,11 +1,15 @@
 import { Controller, compareSemVer, MaybeError } from '@superblocksteam/shared';
-import { Closer, shutdown } from '@superblocksteam/shared-backend';
+import { Closer, ConnectionPoolCoordinator, shutdown } from '@superblocksteam/shared-backend';
 import { VersionedPluginDefinition, TLSOptions } from '@superblocksteam/worker';
 import axios from 'axios';
 import P from 'pino';
 import { forward } from './diagnostics';
-import { SUPERBLOCKS_CONTROLLER_DISCOVERY_INTERVAL_SECONDS } from './env';
-import { controllerGauge } from './metrics';
+import {
+  SUPERBLOCKS_CONNECTION_CACHE_MAX_CONCURRENT_CONNECTIONS,
+  SUPERBLOCKS_CONNECTION_CACHE_MAX_CONNECTIONS_PER_DATASOURCE,
+  SUPERBLOCKS_CONTROLLER_DISCOVERY_INTERVAL_SECONDS
+} from './env';
+import { controllerGauge, poolConnectionsBusyGauge, poolConnectionsIdleGauge, poolConnectionsTotalGauge } from './metrics';
 import { Plugin } from './plugin';
 import { Shim } from './shim';
 import { ScheduledTask } from './task';
@@ -32,8 +36,9 @@ export class ControllerFleet implements Closer {
   private _reconciler: ScheduledTask;
   private _concurrency: number;
   private _labels: Record<string, string>;
+  private readonly _connectionPoolCoordinator: ConnectionPoolCoordinator;
 
-  constructor(config: Options) {
+  constructor(config: Options, connectionPoolCoordinator: ConnectionPoolCoordinator) {
     this._plugins = {};
     this._tls = config.tls;
     this._vpds = config.vpds;
@@ -42,10 +47,20 @@ export class ControllerFleet implements Closer {
     this._registered = {};
     this._concurrency = config.concurrency;
     this._labels = config.labels;
+    this._connectionPoolCoordinator = connectionPoolCoordinator;
   }
 
   static async init(config: Options): Promise<ControllerFleet> {
-    const fleet = new ControllerFleet(config);
+    const connectionPoolCoordinator = new ConnectionPoolCoordinator({
+      maxConnections: SUPERBLOCKS_CONNECTION_CACHE_MAX_CONCURRENT_CONNECTIONS,
+      maxConnectionsPerKey: SUPERBLOCKS_CONNECTION_CACHE_MAX_CONNECTIONS_PER_DATASOURCE,
+      metrics: {
+        poolConnectionsTotalGauge,
+        poolConnectionsIdleGauge,
+        poolConnectionsBusyGauge
+      }
+    });
+    const fleet = new ControllerFleet(config, connectionPoolCoordinator);
 
     // Plugins should be loaded at the fleet level.
     // We dont' need to re-load for each future controller.
@@ -54,7 +69,7 @@ export class ControllerFleet implements Closer {
     //              is neglibible, this approach will eliminate any potenital issues with
     //              concurrent dyamic imports.
     for (const vpd of config.vpds) {
-      const plugin = await Shim.init(vpd);
+      const plugin = await Shim.init(vpd, connectionPoolCoordinator);
 
       if (!(plugin.name() in fleet._plugins)) {
         fleet._plugins[plugin.name()] = [];
@@ -120,6 +135,7 @@ export class ControllerFleet implements Closer {
   public async close(reason?: string): Promise<MaybeError> {
     this._logger.info({ reason }, 'shutdown request received');
     await shutdown(reason, this._reconciler, ...Object.values(this._registered));
+    this._connectionPoolCoordinator.shutdown();
   }
 
   private async reconcile(): Promise<void> {

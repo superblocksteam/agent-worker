@@ -39,6 +39,24 @@ export const pluginGauge = new Gauge({
   registers: [registry]
 });
 
+export const poolConnectionsTotalGauge = new Gauge({
+  name: `${prefix}pool_connections_total`,
+  help: 'The total number of connections held by the connection pool.',
+  registers: [registry]
+});
+
+export const poolConnectionsIdleGauge = new Gauge({
+  name: `${prefix}pool_connections_idle`,
+  help: 'The number of idle connections held by the connection pool.',
+  registers: [registry]
+});
+
+export const poolConnectionsBusyGauge = new Gauge({
+  name: `${prefix}pool_connections_busy`,
+  help: 'The number of busy connections held by the connection pool.',
+  registers: [registry]
+});
+
 export const executionLatency = new Histogram({
   name: 'superblocks_controller_execution_latency_milliseconds',
   help: 'Latency from when the controller sends a request to when it is scheduled by the worker for execution.',

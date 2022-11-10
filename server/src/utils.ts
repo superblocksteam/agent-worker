@@ -139,3 +139,8 @@ export function delta(actual: { [url: string]: Transport }, desired: Controller[
 
   return { add: toAdd, remove: toRemove };
 }
+
+export function parseConnectionCacheTTLs(serialized: string | undefined): Record<string, number> {
+  if (!serialized) return {};
+  return Object.fromEntries(serialized.split(',').map((s) => s.split('=')));
+}

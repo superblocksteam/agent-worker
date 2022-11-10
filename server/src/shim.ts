@@ -1,5 +1,5 @@
 import { ExecutionContext } from '@superblocksteam/shared';
-import { BasePlugin, sanitizeAgentKey } from '@superblocksteam/shared-backend';
+import { BasePlugin, ConnectionPoolCoordinator, sanitizeAgentKey } from '@superblocksteam/shared-backend';
 import { VersionedPluginDefinition, Event, Request, Response } from '@superblocksteam/worker';
 import P from 'pino';
 import dependencies from './dependencies';
@@ -8,7 +8,9 @@ import {
   SUPERBLOCKS_WORKER_EXECUTION_PYTHON_TIMEOUT_MS,
   SUPERBLOCKS_WORKER_EXECUTION_JS_TIMEOUT_MS,
   SUPERBLOCKS_WORKER_EXECUTION_REST_API_TIMEOUT_MS,
-  SUPERBLOCKS_WORKER_EXECUTION_REST_API_MAX_CONTENT_LENGTH_BYTES
+  SUPERBLOCKS_WORKER_EXECUTION_REST_API_MAX_CONTENT_LENGTH_BYTES,
+  SUPERBLOCKS_CONNECTION_CACHE_TTL_MS_PLUGINS,
+  SUPERBLOCKS_CONNECTION_CACHE_TTL_MS_DEFAULT
 } from './env';
 import logger from './logger';
 import { Plugin } from './plugin';
@@ -22,7 +24,12 @@ export class Shim<T extends BasePlugin> implements Plugin {
   private _logger: P.Logger;
   private _pluginDef: VersionedPluginDefinition;
 
-  private constructor(pluginDef: VersionedPluginDefinition, plugin: T, _logger?: P.Logger) {
+  private constructor(
+    pluginDef: VersionedPluginDefinition,
+    plugin: T,
+    connectionPoolCoordinator: ConnectionPoolCoordinator,
+    _logger?: P.Logger
+  ) {
     this._plugin = plugin;
     this._pluginDef = pluginDef;
 
@@ -32,10 +39,11 @@ export class Shim<T extends BasePlugin> implements Plugin {
     this._plugin.attachLogger(this._logger);
     this._plugin.attachTracer(getTracer());
     this.run = this.run.bind(this);
+    this._plugin.attachConnectionPool(connectionPoolCoordinator);
   }
 
   // Using the static factory function pattern.
-  static async init(pluginDef: VersionedPluginDefinition): Promise<Plugin> {
+  static async init(pluginDef: VersionedPluginDefinition, connectionPoolCoordinator: ConnectionPoolCoordinator): Promise<Plugin> {
     const key = `sb-${pluginDef.name}-${pluginDef.version}`;
 
     if (!(key in dependencies)) {
@@ -45,6 +53,8 @@ export class Shim<T extends BasePlugin> implements Plugin {
     const plugin: BasePlugin = dependencies[key] as BasePlugin;
 
     plugin.configure({
+      connectionPoolIdleTimeoutMs:
+        SUPERBLOCKS_CONNECTION_CACHE_TTL_MS_PLUGINS[pluginDef.name] ?? SUPERBLOCKS_CONNECTION_CACHE_TTL_MS_DEFAULT,
       pythonExecutionTimeoutMs: SUPERBLOCKS_WORKER_EXECUTION_PYTHON_TIMEOUT_MS,
       javascriptExecutionTimeoutMs: SUPERBLOCKS_WORKER_EXECUTION_JS_TIMEOUT_MS,
       restApiExecutionTimeoutMs: SUPERBLOCKS_WORKER_EXECUTION_REST_API_TIMEOUT_MS,
@@ -60,7 +70,7 @@ export class Shim<T extends BasePlugin> implements Plugin {
       // not understanding something so i'm wrapping it.
     }
 
-    return new Shim(pluginDef, plugin);
+    return new Shim(pluginDef, plugin, connectionPoolCoordinator);
   }
 
   public async run(_event: Event, _request: Request): Promise<{ resp?: Response; err?: Error }> {

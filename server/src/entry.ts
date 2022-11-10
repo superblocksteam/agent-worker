@@ -1,4 +1,4 @@
-import { readFileSync } from 'fs';
+import { readFileSync, unlinkSync } from 'fs';
 import { MaybeError } from '@superblocksteam/shared';
 import { Closer, HttpServer, shutdownHandlers } from '@superblocksteam/shared-backend';
 import { TLSOptions, VersionedPluginDefinition } from '@superblocksteam/worker';
@@ -16,7 +16,8 @@ import {
   SUPERBLOCKS_WORKER_TLS_CERT_FILE,
   SUPERBLOCKS_WORKER_TLS_INSECURE,
   SUPERBLOCKS_WORKER_TLS_KEY_FILE,
-  SUPERBLOCKS_WORKER_VALIDATE_SERVER_NAME as validateServer
+  SUPERBLOCKS_WORKER_VALIDATE_SERVER_NAME as validateServer,
+  SUPERBLOCKS_WORKER_HEALTHY_PATH
 } from './env';
 import logger from './logger';
 import { handler, healthcheck } from './metrics';
@@ -102,6 +103,15 @@ try {
         close: async (reason?: string): Promise<MaybeError> => {
           try {
             await tracer.shutdown();
+          } catch (err) {
+            return err;
+          }
+        }
+      },
+      {
+        close: async (reason?: string): Promise<MaybeError> => {
+          try {
+            unlinkSync(SUPERBLOCKS_WORKER_HEALTHY_PATH);
           } catch (err) {
             return err;
           }
