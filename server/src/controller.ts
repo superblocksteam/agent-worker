@@ -13,6 +13,7 @@ import { controllerGauge, poolConnectionsBusyGauge, poolConnectionsIdleGauge, po
 import { Plugin } from './plugin';
 import { Shim } from './shim';
 import { ScheduledTask } from './task';
+import { getTracer } from './tracer';
 import { Transport, SocketIO } from './transport';
 import { baseServerRequest, delta } from './utils';
 
@@ -54,6 +55,7 @@ export class ControllerFleet implements Closer {
     const connectionPoolCoordinator = new ConnectionPoolCoordinator({
       maxConnections: SUPERBLOCKS_CONNECTION_CACHE_MAX_CONCURRENT_CONNECTIONS,
       maxConnectionsPerKey: SUPERBLOCKS_CONNECTION_CACHE_MAX_CONNECTIONS_PER_DATASOURCE,
+      tracer: getTracer(),
       metrics: {
         poolConnectionsTotalGauge,
         poolConnectionsIdleGauge,
