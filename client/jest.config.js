@@ -1,7 +1,18 @@
 module.exports = {
   roots: ['<rootDir>/'],
   transform: {
-    '^.+\\.(png|ts|tsx)$': 'ts-jest'
+    '^.+\\.(png|js|ts|tsx)$': [
+      '@swc/jest',
+      {
+        jsc: {
+          target: 'es2022',
+          parser: {
+            syntax: 'typescript',
+            decorators: true
+          }
+        }
+      }
+    ]
   },
   testRegex: '(/__tests__/.*|(\\.)(test|spec))\\.tsx?$',
   moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'json', 'node', 'css'],
